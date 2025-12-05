@@ -3,6 +3,12 @@
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Loader2, Search, Database, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 
 interface BatchRun {
     batch_run_id: string;
@@ -26,13 +32,6 @@ export default function LeadSearchPage() {
     }, []);
 
     const fetchRuns = async () => {
-        // Fetch distinct batch_run_ids and their counts
-        // Note: Supabase doesn't support "GROUP BY" easily in the JS client without RPC or raw SQL usually.
-        // For simplicity, we'll fetch the latest 100 leads and group them client-side or just show a list of leads.
-        // Better approach for "Logs": Create a separate 'logs' table? 
-        // Or just fetch all unique batch_run_ids from the leads table?
-        // Let's try to fetch unique batch_run_ids.
-
         const { data, error } = await supabase
             .from('people_search_leads')
             .select('batch_run_id, created_at')
@@ -44,7 +43,6 @@ export default function LeadSearchPage() {
             return;
         }
 
-        // Group by batch_run_id
         const grouped = data.reduce((acc: any, curr: any) => {
             if (!acc[curr.batch_run_id]) {
                 acc[curr.batch_run_id] = {
@@ -97,113 +95,133 @@ export default function LeadSearchPage() {
     };
 
     return (
-        <div className="container mx-auto p-8 max-w-6xl">
-            <h1 className="text-3xl font-bold mb-8 flex items-center gap-2">
-                <Search className="w-8 h-8" />
-                Lead Search Microservice
-            </h1>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                {/* Configuration Panel */}
-                <div className="bg-card border rounded-lg p-6 shadow-sm">
-                    <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-                        <Database className="w-5 h-5" />
-                        New Search
-                    </h2>
-
-                    <form onSubmit={handleSearch} className="space-y-4">
-                        <div>
-                            <label className="block text-sm font-medium mb-1">Industry Keywords (comma separated)</label>
-                            <input
-                                type="text"
-                                className="w-full p-2 border rounded-md bg-background"
-                                placeholder="e.g. software, saas, marketing"
-                                value={industryKeywords}
-                                onChange={(e) => setIndustryKeywords(e.target.value)}
-                            />
-                        </div>
-
-                        <div>
-                            <label className="block text-sm font-medium mb-1">Locations (comma separated)</label>
-                            <input
-                                type="text"
-                                className="w-full p-2 border rounded-md bg-background"
-                                placeholder="e.g. United States, California"
-                                value={locations}
-                                onChange={(e) => setLocations(e.target.value)}
-                            />
-                        </div>
-
-                        <div>
-                            <label className="block text-sm font-medium mb-1">Job Titles (comma separated)</label>
-                            <input
-                                type="text"
-                                className="w-full p-2 border rounded-md bg-background"
-                                placeholder="e.g. CEO, Founder, Marketing Director"
-                                value={titles}
-                                onChange={(e) => setTitles(e.target.value)}
-                            />
-                        </div>
-
-                        <div>
-                            <label className="block text-sm font-medium mb-1">Max Results</label>
-                            <input
-                                type="number"
-                                className="w-full p-2 border rounded-md bg-background"
-                                value={maxResults}
-                                onChange={(e) => setMaxResults(Number(e.target.value))}
-                                min={1}
-                                max={1000}
-                            />
-                        </div>
-
-                        <button
-                            type="submit"
-                            disabled={loading}
-                            className="w-full bg-primary text-primary-foreground hover:bg-primary/90 py-2 px-4 rounded-md font-medium flex items-center justify-center gap-2 transition-colors"
-                        >
-                            {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Start Search'}
-                        </button>
-                    </form>
-
-                    {status && (
-                        <div className={`mt-4 p-3 rounded-md text-sm flex items-start gap-2 ${status.startsWith('Error') ? 'bg-destructive/10 text-destructive' : 'bg-green-500/10 text-green-600'}`}>
-                            {status.startsWith('Error') ? <AlertCircle className="w-4 h-4 mt-0.5" /> : <CheckCircle2 className="w-4 h-4 mt-0.5" />}
-                            <p>{status}</p>
-                        </div>
-                    )}
+        <div className="container mx-auto p-8 max-w-6xl space-y-8">
+            <div className="flex items-center gap-3">
+                <div className="p-3 bg-primary/10 rounded-full">
+                    <Search className="w-8 h-8 text-primary" />
                 </div>
+                <div>
+                    <h1 className="text-3xl font-bold tracking-tight">Lead Search Microservice</h1>
+                    <p className="text-muted-foreground">Automate your B2B prospecting with Apollo.io</p>
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Configuration Panel */}
+                <Card>
+                    <CardHeader>
+                        <CardTitle className="flex items-center gap-2">
+                            <Database className="w-5 h-5" />
+                            New Search
+                        </CardTitle>
+                        <CardDescription>Configure your search parameters below.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <form onSubmit={handleSearch} className="space-y-4">
+                            <div className="space-y-2">
+                                <Label htmlFor="industry">Industry Keywords</Label>
+                                <Input
+                                    id="industry"
+                                    placeholder="e.g. software, saas, marketing"
+                                    value={industryKeywords}
+                                    onChange={(e) => setIndustryKeywords(e.target.value)}
+                                />
+                                <p className="text-xs text-muted-foreground">Comma separated values</p>
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="location">Locations</Label>
+                                <Input
+                                    id="location"
+                                    placeholder="e.g. United States, California"
+                                    value={locations}
+                                    onChange={(e) => setLocations(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="titles">Job Titles</Label>
+                                <Input
+                                    id="titles"
+                                    placeholder="e.g. CEO, Founder, Marketing Director"
+                                    value={titles}
+                                    onChange={(e) => setTitles(e.target.value)}
+                                />
+                            </div>
+
+                            <div className="space-y-2">
+                                <Label htmlFor="maxResults">Max Results</Label>
+                                <Input
+                                    id="maxResults"
+                                    type="number"
+                                    value={maxResults}
+                                    onChange={(e) => setMaxResults(Number(e.target.value))}
+                                    min={1}
+                                    max={1000}
+                                />
+                            </div>
+
+                            <Button type="submit" className="w-full" disabled={loading}>
+                                {loading ? (
+                                    <>
+                                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                                        Searching...
+                                    </>
+                                ) : (
+                                    'Start Search'
+                                )}
+                            </Button>
+                        </form>
+
+                        {status && (
+                            <Alert className={`mt-6 ${status.startsWith('Error') ? 'variant-destructive' : ''}`}>
+                                {status.startsWith('Error') ? <AlertCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                                <AlertTitle>{status.startsWith('Error') ? 'Error' : 'Success'}</AlertTitle>
+                                <AlertDescription>
+                                    {status}
+                                </AlertDescription>
+                            </Alert>
+                        )}
+                    </CardContent>
+                </Card>
 
                 {/* Execution Logs */}
-                <div className="bg-card border rounded-lg p-6 shadow-sm">
-                    <h2 className="text-xl font-semibold mb-4">Recent Batch Runs</h2>
-                    <div className="overflow-auto max-h-[500px]">
-                        <table className="w-full text-sm text-left">
-                            <thead className="bg-muted text-muted-foreground sticky top-0">
-                                <tr>
-                                    <th className="p-3">Batch ID</th>
-                                    <th className="p-3">Date</th>
-                                    <th className="p-3 text-right">Leads Found</th>
-                                </tr>
-                            </thead>
-                            <tbody className="divide-y">
-                                {runs.length === 0 ? (
-                                    <tr>
-                                        <td colSpan={3} className="p-4 text-center text-muted-foreground">No runs found yet.</td>
-                                    </tr>
-                                ) : (
-                                    runs.map((run) => (
-                                        <tr key={run.batch_run_id} className="hover:bg-muted/50">
-                                            <td className="p-3 font-mono text-xs">{run.batch_run_id.slice(0, 8)}...</td>
-                                            <td className="p-3">{new Date(run.created_at).toLocaleString()}</td>
-                                            <td className="p-3 text-right font-medium">{run.count}</td>
-                                        </tr>
-                                    ))
-                                )}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+                <Card className="h-fit">
+                    <CardHeader>
+                        <CardTitle>Recent Batch Runs</CardTitle>
+                        <CardDescription>History of your recent search executions.</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        <div className="rounded-md border">
+                            <Table>
+                                <TableHeader>
+                                    <TableRow>
+                                        <TableHead>Batch ID</TableHead>
+                                        <TableHead>Date</TableHead>
+                                        <TableHead className="text-right">Leads</TableHead>
+                                    </TableRow>
+                                </TableHeader>
+                                <TableBody>
+                                    {runs.length === 0 ? (
+                                        <TableRow>
+                                            <TableCell colSpan={3} className="h-24 text-center">
+                                                No runs found.
+                                            </TableCell>
+                                        </TableRow>
+                                    ) : (
+                                        runs.map((run) => (
+                                            <TableRow key={run.batch_run_id}>
+                                                <TableCell className="font-mono text-xs">{run.batch_run_id.slice(0, 8)}...</TableCell>
+                                                <TableCell>{new Date(run.created_at).toLocaleDateString()}</TableCell>
+                                                <TableCell className="text-right font-medium">{run.count}</TableCell>
+                                            </TableRow>
+                                        ))
+                                    )}
+                                </TableBody>
+                            </Table>
+                        </div>
+                    </CardContent>
+                </Card>
             </div>
         </div>
     );

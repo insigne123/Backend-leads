@@ -16,7 +16,7 @@ export default function Home() {
           <div className="container px-4 md:px-6">
             <div className="grid gap-6 lg:grid-cols-[1fr_400px] lg:gap-12 xl:grid-cols-[1fr_600px]">
               {heroImage && (
-                 <Image
+                <Image
                   alt="Hero"
                   className="mx-auto aspect-video overflow-hidden rounded-xl object-cover sm:w-full lg:order-last lg:aspect-square"
                   height="600"
@@ -38,12 +38,15 @@ export default function Home() {
                   <Button asChild size="lg" className="bg-accent text-accent-foreground hover:bg-accent/90">
                     <Link href="#about">Get Started</Link>
                   </Button>
+                  <Button asChild size="lg" variant="outline">
+                    <Link href="/lead-search">Lead Search Dashboard</Link>
+                  </Button>
                 </div>
               </div>
             </div>
           </div>
         </section>
-        
+
         <section id="about" className="w-full bg-muted/40 py-12 md:py-24 lg:py-32">
           <div className="container px-4 md:px-6">
             <div className="flex flex-col items-center justify-center space-y-4 text-center">
@@ -66,7 +69,7 @@ export default function Home() {
               </p>
             </div>
             <div className="mx-auto w-full max-w-sm space-y-2">
-                <Button type="submit" size="lg" className="w-full">Contact Us</Button>
+              <Button type="submit" size="lg" className="w-full">Contact Us</Button>
             </div>
           </div>
         </section>
