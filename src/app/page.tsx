@@ -1,80 +1,228 @@
-import Image from 'next/image';
-import { Header } from '@/components/layout/header';
-import { Footer } from '@/components/layout/footer';
+'use client';
+
+import { useState, useEffect } from 'react';
+import { supabase } from '@/lib/supabase';
+import { Loader2, Search, Database, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { PlaceHolderImages } from '@/lib/placeholder-images';
-import Link from 'next/link';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+
+interface BatchRun {
+  batch_run_id: string;
+  created_at: string;
+  count: number;
+}
 
 export default function Home() {
-  const heroImage = PlaceHolderImages.find((img) => img.id === 'hero-section-image');
+  const [loading, setLoading] = useState(false);
+  const [runs, setRuns] = useState<BatchRun[]>([]);
+  const [status, setStatus] = useState<string>('');
+
+  // Form State
+  const [industryKeywords, setIndustryKeywords] = useState('');
+  const [locations, setLocations] = useState('');
+  const [titles, setTitles] = useState('');
+  const [maxResults, setMaxResults] = useState(100);
+
+  useEffect(() => {
+    fetchRuns();
+  }, []);
+
+  const fetchRuns = async () => {
+    const { data, error } = await supabase
+      .from('people_search_leads')
+      .select('batch_run_id, created_at')
+      .order('created_at', { ascending: false })
+      .limit(500);
+
+    if (error) {
+      console.error('Error fetching runs:', error);
+      return;
+    }
+
+    const grouped = data.reduce((acc: any, curr: any) => {
+      if (!acc[curr.batch_run_id]) {
+        acc[curr.batch_run_id] = {
+          batch_run_id: curr.batch_run_id,
+          created_at: curr.created_at,
+          count: 0,
+        };
+      }
+      acc[curr.batch_run_id].count++;
+      return acc;
+    }, {});
+
+    setRuns(Object.values(grouped));
+  };
+
+  const handleSearch = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setStatus('Starting search...');
+
+    try {
+      const payload = {
+        industry_keywords: industryKeywords ? industryKeywords.split(',').map(s => s.trim()) : undefined,
+        company_location: locations ? locations.split(',').map(s => s.trim()) : undefined,
+        titles: titles ? titles.split(',').map(s => s.trim()) : undefined,
+        max_results: Number(maxResults),
+      };
+
+      const res = await fetch('/api/lead-search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        throw new Error(data.error || 'Search failed');
+      }
+
+      setStatus(`Success! Found ${data.leads_count} leads. Batch ID: ${data.batch_run_id}`);
+      fetchRuns(); // Refresh logs
+    } catch (error: any) {
+      setStatus(`Error: ${error.message}`);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
-    <div className="flex min-h-screen flex-col">
-      <Header />
-      <main className="flex-1">
-        <section id="home" className="w-full py-12 md:py-24 lg:py-32">
-          <div className="container px-4 md:px-6">
-            <div className="grid gap-6 lg:grid-cols-[1fr_400px] lg:gap-12 xl:grid-cols-[1fr_600px]">
-              {heroImage && (
-                <Image
-                  alt="Hero"
-                  className="mx-auto aspect-video overflow-hidden rounded-xl object-cover sm:w-full lg:order-last lg:aspect-square"
-                  height="600"
-                  src={heroImage.imageUrl}
-                  width="600"
-                  data-ai-hint={heroImage.imageHint}
-                />
-              )}
-              <div className="flex flex-col justify-center space-y-4">
-                <div className="space-y-2">
-                  <h1 className="font-headline text-3xl font-bold tracking-tighter sm:text-5xl xl:text-6xl/none">
-                    Build Your Next App with Startify
-                  </h1>
-                  <p className="max-w-[600px] text-muted-foreground md:text-xl">
-                    A simple and elegant starting point for your Next.js projects. Fully customizable and ready to deploy.
-                  </p>
-                </div>
-                <div className="flex flex-col gap-2 min-[400px]:flex-row">
-                  <Button asChild size="lg" className="bg-accent text-accent-foreground hover:bg-accent/90">
-                    <Link href="#about">Get Started</Link>
-                  </Button>
-                  <Button asChild size="lg" variant="outline">
-                    <Link href="/lead-search">Lead Search Dashboard</Link>
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </section>
+    <div className="container mx-auto p-8 max-w-6xl space-y-8">
+      <div className="flex items-center gap-3">
+        <div className="p-3 bg-primary/10 rounded-full">
+          <Search className="w-8 h-8 text-primary" />
+        </div>
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight">Lead Search Microservice</h1>
+          <p className="text-muted-foreground">Automate your B2B prospecting with Apollo.io</p>
+        </div>
+      </div>
 
-        <section id="about" className="w-full bg-muted/40 py-12 md:py-24 lg:py-32">
-          <div className="container px-4 md:px-6">
-            <div className="flex flex-col items-center justify-center space-y-4 text-center">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Configuration Panel */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Database className="w-5 h-5" />
+              New Search
+            </CardTitle>
+            <CardDescription>Configure your search parameters below.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <form onSubmit={handleSearch} className="space-y-4">
               <div className="space-y-2">
-                <h2 className="font-headline text-3xl font-bold tracking-tighter sm:text-5xl">About Startify</h2>
-                <p className="max-w-[900px] text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
-                  Startify provides a solid foundation with a pre-configured layout, theming, and essential UI components. Focus on your application's logic instead of boilerplate code.
-                </p>
+                <Label htmlFor="industry">Industry Keywords</Label>
+                <Input
+                  id="industry"
+                  placeholder="e.g. software, saas, marketing"
+                  value={industryKeywords}
+                  onChange={(e) => setIndustryKeywords(e.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">Comma separated values</p>
               </div>
-            </div>
-          </div>
-        </section>
 
-        <section id="contact" className="w-full py-12 md:py-24 lg:py-32">
-          <div className="container grid items-center justify-center gap-4 px-4 text-center md:px-6">
-            <div className="space-y-3">
-              <h2 className="font-headline text-3xl font-bold tracking-tighter md:text-4xl/tight">Get In Touch</h2>
-              <p className="mx-auto max-w-[600px] text-muted-foreground md:text-xl/relaxed lg:text-base/relaxed xl:text-xl/relaxed">
-                Have questions or want to collaborate? We'd love to hear from you.
-              </p>
+              <div className="space-y-2">
+                <Label htmlFor="location">Locations</Label>
+                <Input
+                  id="location"
+                  placeholder="e.g. United States, California"
+                  value={locations}
+                  onChange={(e) => setLocations(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="titles">Job Titles</Label>
+                <Input
+                  id="titles"
+                  placeholder="e.g. CEO, Founder, Marketing Director"
+                  value={titles}
+                  onChange={(e) => setTitles(e.target.value)}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="maxResults">Max Results</Label>
+                <Input
+                  id="maxResults"
+                  type="number"
+                  value={maxResults}
+                  onChange={(e) => setMaxResults(Number(e.target.value))}
+                  min={1}
+                  max={1000}
+                />
+              </div>
+
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Searching...
+                  </>
+                ) : (
+                  'Start Search'
+                )}
+              </Button>
+            </form>
+
+            {status && (
+              <Alert className={`mt-6 ${status.startsWith('Error') ? 'variant-destructive' : ''}`}>
+                {status.startsWith('Error') ? <AlertCircle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
+                <AlertTitle>{status.startsWith('Error') ? 'Error' : 'Success'}</AlertTitle>
+                <AlertDescription>
+                  {status}
+                </AlertDescription>
+              </Alert>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* Execution Logs */}
+        <Card className="h-fit">
+          <CardHeader>
+            <CardTitle>Recent Batch Runs</CardTitle>
+            <CardDescription>History of your recent search executions.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Batch ID</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead className="text-right">Leads</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {runs.length === 0 ? (
+                    <TableRow>
+                      <TableCell colSpan={3} className="h-24 text-center">
+                        No runs found.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    runs.map((run) => (
+                      <TableRow key={run.batch_run_id}>
+                        <TableCell className="font-mono text-xs">{run.batch_run_id.slice(0, 8)}...</TableCell>
+                        <TableCell>{new Date(run.created_at).toLocaleDateString()}</TableCell>
+                        <TableCell className="text-right font-medium">{run.count}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
             </div>
-            <div className="mx-auto w-full max-w-sm space-y-2">
-              <Button type="submit" size="lg" className="w-full">Contact Us</Button>
-            </div>
-          </div>
-        </section>
-      </main>
-      <Footer />
+          </CardContent>
+        </Card>
+      </div>
     </div>
   );
 }
