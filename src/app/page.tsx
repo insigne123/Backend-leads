@@ -20,6 +20,7 @@ export default function Home() {
   const [loading, setLoading] = useState(false);
   const [runs, setRuns] = useState<BatchRun[]>([]);
   const [status, setStatus] = useState<string>('');
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   // Form State
   const [industryKeywords, setIndustryKeywords] = useState('');
@@ -62,6 +63,7 @@ export default function Home() {
     e.preventDefault();
     setLoading(true);
     setStatus('Starting search...');
+    setDebugLogs([]);
 
     try {
       const payload = {
@@ -86,9 +88,15 @@ export default function Home() {
       }
 
       setStatus(`Success! Found ${data.leads_count} leads. Batch ID: ${data.batch_run_id}`);
+      if (data.debug_logs) {
+        setDebugLogs(data.debug_logs);
+      }
       fetchRuns(); // Refresh logs
     } catch (error: any) {
       setStatus(`Error: ${error.message}`);
+      if (error.debug_logs) {
+        setDebugLogs(error.debug_logs);
+      }
     } finally {
       setLoading(false);
     }
@@ -181,6 +189,15 @@ export default function Home() {
                   {status}
                 </AlertDescription>
               </Alert>
+            )}
+
+            {debugLogs.length > 0 && (
+              <div className="mt-6">
+                <h3 className="text-sm font-semibold mb-2">Debug Logs</h3>
+                <div className="bg-muted p-4 rounded-md overflow-auto max-h-[300px] text-xs font-mono whitespace-pre-wrap">
+                  {debugLogs.join('\n')}
+                </div>
+              </div>
             )}
           </CardContent>
         </Card>
