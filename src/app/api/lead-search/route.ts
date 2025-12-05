@@ -281,14 +281,34 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (m
         updated_at: new Date().toISOString(),
     }));
 
-    const { error } = await supabase
+    // Perform upsert and select the inserted rows to verify visibility
+    const { data, error } = await supabase
         .from('people_search_leads')
-        .upsert(records, { onConflict: 'id' });
+        .upsert(records, { onConflict: 'id' })
+        .select();
 
     if (error) {
         log('Error saving to Supabase:', error);
         throw new Error(`Supabase Error: ${error.message}`);
     } else {
         log(`Saved ${leads.length} leads to Supabase.`);
+
+        if (data) {
+            log(`Verification: API successfully read back ${data.length} rows.`);
+        } else {
+            log('Verification: API read back 0 rows (RLS might be blocking SELECT).');
+        }
+
+        // Double check count for this batch
+        const { count, error: countError } = await supabase
+            .from('people_search_leads')
+            .select('*', { count: 'exact', head: true })
+            .eq('batch_run_id', batchRunId);
+
+        if (countError) {
+            log('Verification Error (Count):', countError);
+        } else {
+            log(`Verification: Total rows in DB for this batch: ${count}`);
+        }
     }
 }
