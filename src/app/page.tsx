@@ -21,6 +21,7 @@ export default function Home() {
   const [runs, setRuns] = useState<BatchRun[]>([]);
   const [status, setStatus] = useState<string>('');
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [leads, setLeads] = useState<any[]>([]);
 
   // Form State
   const [userId, setUserId] = useState('test-user-1');
@@ -65,6 +66,7 @@ export default function Home() {
     setLoading(true);
     setStatus('Starting search...');
     setDebugLogs([]);
+    setLeads([]);
 
     try {
       const payload = {
@@ -92,6 +94,9 @@ export default function Home() {
       setStatus(`Success! Found ${data.leads_count} leads. Batch ID: ${data.batch_run_id}`);
       if (data.debug_logs) {
         setDebugLogs(data.debug_logs);
+      }
+      if (data.leads) {
+        setLeads(data.leads);
       }
       fetchRuns(); // Refresh logs
     } catch (error: any) {
@@ -253,6 +258,50 @@ export default function Home() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Results Table */}
+      {leads.length > 0 && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Search Results</CardTitle>
+            <CardDescription>Found {leads.length} leads in this session.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-md border">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Name</TableHead>
+                    <TableHead>Title</TableHead>
+                    <TableHead>Company</TableHead>
+                    <TableHead>Email</TableHead>
+                    <TableHead>LinkedIn</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {leads.map((lead) => (
+                    <TableRow key={lead.id}>
+                      <TableCell className="font-medium">{lead.first_name} {lead.last_name}</TableCell>
+                      <TableCell>{lead.title}</TableCell>
+                      <TableCell>{lead.organization?.name || lead.organization_name}</TableCell>
+                      <TableCell>{lead.email || 'N/A'}</TableCell>
+                      <TableCell>
+                        {lead.linkedin_url ? (
+                          <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
+                            View Profile
+                          </a>
+                        ) : (
+                          'N/A'
+                        )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }
