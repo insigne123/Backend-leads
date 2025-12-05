@@ -161,12 +161,12 @@ async function fetchCompanies(
 
             log(`Fetching Companies (Page ${page}) Payload:`, payload);
 
-            const response = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
+            // Pass API key as query parameter
+            const response = await fetch(`https://api.apollo.io/v1/mixed_companies/search?api_key=${apiKey}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Cache-Control': 'no-cache',
-                    'api-key': apiKey,
                 },
                 body: JSON.stringify(payload),
             });
@@ -225,12 +225,12 @@ async function fetchPeople(
 
             log(`Fetching People (Page ${page}) Payload:`, payload);
 
-            const response = await fetch('https://api.apollo.io/v1/mixed_people/search', {
+            // Pass API key as query parameter
+            const response = await fetch(`https://api.apollo.io/v1/mixed_people/search?api_key=${apiKey}`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Cache-Control': 'no-cache',
-                    'api-key': apiKey,
                 },
                 body: JSON.stringify(payload),
             });
