@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { supabase } from '@/lib/supabase';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 
 // Types for the request body
 interface LeadSearchRequest {
+    user_id: string; // Added user_id
     industry_keywords?: string[];
     company_location?: string[];
     titles?: string[];
@@ -43,6 +45,7 @@ export async function POST(req: Request) {
     try {
         const body: LeadSearchRequest = await req.json();
         const {
+            user_id,
             industry_keywords,
             company_location,
             titles,
@@ -50,6 +53,13 @@ export async function POST(req: Request) {
             employee_ranges,
             max_results = 100,
         } = body;
+
+        if (!user_id) {
+            return NextResponse.json(
+                { error: 'Missing user_id' },
+                { status: 400 }
+            );
+        }
 
         const apiKey = process.env.APOLLO_API_KEY;
         if (!apiKey) {
@@ -60,18 +70,69 @@ export async function POST(req: Request) {
         }
 
         const batchRunId = uuidv4();
-        log(`Starting batch run: ${batchRunId}`);
+        log(`Starting batch run: ${batchRunId} for user: ${user_id}`);
         log('Request Body:', body);
 
+        // --- Pagination Logic Start ---
+        // 1. Generate Filter Hash
+        const filtersForHash = {
+            industry_keywords,
+            company_location,
+            employee_ranges,
+            // We only hash company filters because that's what we paginate
+        };
+        const filtersHash = crypto
+            .createHash('md5')
+            .update(JSON.stringify(filtersForHash))
+            .digest('hex');
+
+        log(`Filters Hash: ${filtersHash}`);
+
+        // 2. Check Search Progress
+        let startPage = 1;
+        const { data: progressData, error: progressError } = await supabase
+            .from('search_progress')
+            .select('last_company_page')
+            .eq('user_id', user_id)
+            .eq('filters_hash', filtersHash)
+            .single();
+
+        if (progressData) {
+            startPage = progressData.last_company_page + 1;
+            log(`Found previous progress. Resuming from Company Page ${startPage}`);
+        } else {
+            log('No previous progress found. Starting from Company Page 1');
+        }
+        // --- Pagination Logic End ---
+
         // Step 1: Search Companies
-        const companies = await fetchCompanies(apiKey, {
+        const { companies, lastPageFetched } = await fetchCompanies(apiKey, {
             industry_keywords,
             company_location,
             employee_ranges,
             max_results,
+            start_page: startPage
         }, log);
 
         log(`Found ${companies.length} companies.`);
+
+        // Update Progress if we fetched anything
+        if (lastPageFetched >= startPage) {
+            const { error: upsertError } = await supabase
+                .from('search_progress')
+                .upsert({
+                    user_id,
+                    filters_hash: filtersHash,
+                    last_company_page: lastPageFetched,
+                    updated_at: new Date().toISOString()
+                });
+
+            if (upsertError) {
+                log('Warning: Failed to save search progress:', upsertError);
+            } else {
+                log(`Saved search progress. Last Company Page: ${lastPageFetched}`);
+            }
+        }
 
         if (companies.length === 0) {
             return NextResponse.json({
@@ -141,13 +202,15 @@ async function fetchCompanies(
         company_location?: string[];
         employee_ranges?: string[];
         max_results: number;
+        start_page: number;
     },
     log: (msg: string, data?: any) => void
-): Promise<ApolloCompany[]> {
+): Promise<{ companies: ApolloCompany[], lastPageFetched: number }> {
     let companies: ApolloCompany[] = [];
-    let page = 1;
+    let page = filters.start_page;
     const perPage = 100;
     const maxCompanies = filters.max_results || 100;
+    let lastPageFetched = page - 1;
 
     while (companies.length < maxCompanies) {
         try {
@@ -187,9 +250,11 @@ async function fetchCompanies(
             }
 
             companies = [...companies, ...newCompanies];
+            lastPageFetched = page;
             page++;
 
-            if (page > 10) break;
+            // Safety break to avoid infinite loops, but allow fetching enough pages
+            if (page > filters.start_page + 10) break;
 
         } catch (error) {
             log('Error fetching companies:', error);
@@ -197,7 +262,7 @@ async function fetchCompanies(
         }
     }
 
-    return companies.slice(0, maxCompanies);
+    return { companies: companies.slice(0, maxCompanies), lastPageFetched };
 }
 
 async function fetchPeople(

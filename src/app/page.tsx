@@ -23,6 +23,7 @@ export default function Home() {
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
 
   // Form State
+  const [userId, setUserId] = useState('test-user-1');
   const [industryKeywords, setIndustryKeywords] = useState('');
   const [locations, setLocations] = useState('');
   const [titles, setTitles] = useState('');
@@ -67,6 +68,7 @@ export default function Home() {
 
     try {
       const payload = {
+        user_id: userId,
         industry_keywords: industryKeywords ? industryKeywords.split(',').map(s => s.trim()) : undefined,
         company_location: locations ? locations.split(',').map(s => s.trim()) : undefined,
         titles: titles ? titles.split(',').map(s => s.trim()) : undefined,
@@ -126,6 +128,17 @@ export default function Home() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSearch} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="userId">User ID (for pagination testing)</Label>
+                <Input
+                  id="userId"
+                  placeholder="e.g. user-123"
+                  value={userId}
+                  onChange={(e) => setUserId(e.target.value)}
+                  required
+                />
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="industry">Industry Keywords</Label>
                 <Input
