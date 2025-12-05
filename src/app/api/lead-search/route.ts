@@ -32,6 +32,14 @@ interface ApolloPerson {
 }
 
 export async function POST(req: Request) {
+    const debugLogs: string[] = [];
+    const log = (msg: string, data?: any) => {
+        const timestamp = new Date().toISOString();
+        const message = data ? `${msg} ${JSON.stringify(data, null, 2)}` : msg;
+        console.log(`[${timestamp}] ${message}`);
+        debugLogs.push(`[${timestamp}] ${message}`);
+    };
+
     try {
         const body: LeadSearchRequest = await req.json();
         const {
@@ -52,7 +60,8 @@ export async function POST(req: Request) {
         }
 
         const batchRunId = uuidv4();
-        console.log(`Starting batch run: ${batchRunId}`);
+        log(`Starting batch run: ${batchRunId}`);
+        log('Request Body:', body);
 
         // Step 1: Search Companies
         const companies = await fetchCompanies(apiKey, {
@@ -60,9 +69,18 @@ export async function POST(req: Request) {
             company_location,
             employee_ranges,
             max_results,
-        });
+        }, log);
 
-        console.log(`Found ${companies.length} companies.`);
+        log(`Found ${companies.length} companies.`);
+
+        if (companies.length === 0) {
+            return NextResponse.json({
+                batch_run_id: batchRunId,
+                leads_count: 0,
+                leads: [],
+                debug_logs: debugLogs,
+            });
+        }
 
         // Step 2: Extract Organization IDs
         const orgIds = Array.from(
@@ -72,7 +90,7 @@ export async function POST(req: Request) {
                     .filter((id) => id && id.trim() !== '')
             )
         );
-        console.log(`Extracted ${orgIds.length} unique organization IDs.`);
+        log(`Extracted ${orgIds.length} unique organization IDs.`);
 
         // Chunk IDs
         const chunkSize = 25;
@@ -92,24 +110,25 @@ export async function POST(req: Request) {
                 titles,
                 seniorities,
                 max_results: remaining,
-            });
+            }, log);
             allLeads = [...allLeads, ...leads];
         }
 
-        console.log(`Found ${allLeads.length} leads.`);
+        log(`Found ${allLeads.length} leads.`);
 
         // Step 4: Persist to Supabase
-        await saveToSupabase(allLeads, batchRunId);
+        await saveToSupabase(allLeads, batchRunId, log);
 
         return NextResponse.json({
             batch_run_id: batchRunId,
             leads_count: allLeads.length,
             leads: allLeads,
+            debug_logs: debugLogs,
         });
     } catch (error: any) {
-        console.error('Error in lead search:', error);
+        log('Error in lead search:', error.message);
         return NextResponse.json(
-            { error: error.message || 'Internal Server Error' },
+            { error: error.message || 'Internal Server Error', debug_logs: debugLogs },
             { status: 500 }
         );
     }
@@ -122,7 +141,8 @@ async function fetchCompanies(
         company_location?: string[];
         employee_ranges?: string[];
         max_results: number;
-    }
+    },
+    log: (msg: string, data?: any) => void
 ): Promise<ApolloCompany[]> {
     let companies: ApolloCompany[] = [];
     let page = 1;
@@ -132,14 +152,14 @@ async function fetchCompanies(
     while (companies.length < maxCompanies) {
         try {
             const payload = {
-                q_keywords: filters.industry_keywords?.join(' '), // Changed to q_keywords for broader search
+                q_keywords: filters.industry_keywords?.join(' '),
                 page: page,
                 per_page: perPage,
                 organization_locations: filters.company_location,
                 organization_num_employees_ranges: filters.employee_ranges,
             };
 
-            console.log('Fetching Companies Payload:', JSON.stringify(payload, null, 2));
+            log(`Fetching Companies (Page ${page}) Payload:`, payload);
 
             const response = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
                 method: 'POST',
@@ -153,22 +173,25 @@ async function fetchCompanies(
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.error(`Apollo API Error (Companies): ${response.status} - ${errorText}`);
+                log(`Apollo API Error (Companies): ${response.status} - ${errorText}`);
                 break;
             }
 
             const data = await response.json();
             const newCompanies = data.organizations || [];
 
-            if (newCompanies.length === 0) break;
+            if (newCompanies.length === 0) {
+                log('No companies found in this page.');
+                break;
+            }
 
             companies = [...companies, ...newCompanies];
             page++;
 
-            if (page > 20) break;
+            if (page > 10) break;
 
         } catch (error) {
-            console.error('Error fetching companies:', error);
+            log('Error fetching companies:', error);
             break;
         }
     }
@@ -183,7 +206,8 @@ async function fetchPeople(
         titles?: string[];
         seniorities?: string[];
         max_results: number;
-    }
+    },
+    log: (msg: string, data?: any) => void
 ): Promise<ApolloPerson[]> {
     let people: ApolloPerson[] = [];
     let page = 1;
@@ -199,7 +223,7 @@ async function fetchPeople(
                 person_seniorities: filters.seniorities,
             };
 
-            console.log('Fetching People Payload:', JSON.stringify(payload, null, 2));
+            log(`Fetching People (Page ${page}) Payload:`, payload);
 
             const response = await fetch('https://api.apollo.io/v1/mixed_people/search', {
                 method: 'POST',
@@ -213,14 +237,17 @@ async function fetchPeople(
 
             if (!response.ok) {
                 const errorText = await response.text();
-                console.error(`Apollo API Error (People): ${response.status} - ${errorText}`);
+                log(`Apollo API Error (People): ${response.status} - ${errorText}`);
                 break;
             }
 
             const data = await response.json();
             const newPeople = data.people || [];
 
-            if (newPeople.length === 0) break;
+            if (newPeople.length === 0) {
+                log('No people found in this page.');
+                break;
+            }
 
             people = [...people, ...newPeople];
             page++;
@@ -229,7 +256,7 @@ async function fetchPeople(
             if (page > 10) break;
 
         } catch (error) {
-            console.error('Error fetching people:', error);
+            log('Error fetching people:', error);
             break;
         }
     }
@@ -237,7 +264,7 @@ async function fetchPeople(
     return people.slice(0, filters.max_results);
 }
 
-async function saveToSupabase(leads: ApolloPerson[], batchRunId: string) {
+async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (msg: string, data?: any) => void) {
     if (leads.length === 0) return;
 
     const records = leads.map((lead) => ({
@@ -257,7 +284,9 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string) {
         .upsert(records, { onConflict: 'id' });
 
     if (error) {
-        console.error('Error saving to Supabase:', error);
+        log('Error saving to Supabase:', error);
         throw new Error(`Supabase Error: ${error.message}`);
+    } else {
+        log(`Saved ${leads.length} leads to Supabase.`);
     }
 }
