@@ -131,6 +131,16 @@ async function fetchCompanies(
 
     while (companies.length < maxCompanies) {
         try {
+            const payload = {
+                q_keywords: filters.industry_keywords?.join(' '), // Changed to q_keywords for broader search
+                page: page,
+                per_page: perPage,
+                organization_locations: filters.company_location,
+                organization_num_employees_ranges: filters.employee_ranges,
+            };
+
+            console.log('Fetching Companies Payload:', JSON.stringify(payload, null, 2));
+
             const response = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
                 method: 'POST',
                 headers: {
@@ -138,13 +148,7 @@ async function fetchCompanies(
                     'Cache-Control': 'no-cache',
                     'api-key': apiKey,
                 },
-                body: JSON.stringify({
-                    q_organization_keyword_tags: filters.industry_keywords,
-                    page: page,
-                    per_page: perPage,
-                    organization_locations: filters.company_location,
-                    organization_num_employees_ranges: filters.employee_ranges,
-                }),
+                body: JSON.stringify(payload),
             });
 
             if (!response.ok) {
@@ -187,6 +191,16 @@ async function fetchPeople(
 
     while (people.length < filters.max_results) {
         try {
+            const payload = {
+                organization_ids: organizationIds,
+                page: page,
+                per_page: perPage,
+                person_titles: filters.titles,
+                person_seniorities: filters.seniorities,
+            };
+
+            console.log('Fetching People Payload:', JSON.stringify(payload, null, 2));
+
             const response = await fetch('https://api.apollo.io/v1/mixed_people/search', {
                 method: 'POST',
                 headers: {
@@ -194,17 +208,12 @@ async function fetchPeople(
                     'Cache-Control': 'no-cache',
                     'api-key': apiKey,
                 },
-                body: JSON.stringify({
-                    organization_ids: organizationIds,
-                    page: page,
-                    per_page: perPage,
-                    person_titles: filters.titles,
-                    person_seniorities: filters.seniorities,
-                }),
+                body: JSON.stringify(payload),
             });
 
             if (!response.ok) {
-                console.error(`Apollo API Error (People): ${response.status}`);
+                const errorText = await response.text();
+                console.error(`Apollo API Error (People): ${response.status} - ${errorText}`);
                 break;
             }
 
