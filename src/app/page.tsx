@@ -302,6 +302,90 @@ export default function Home() {
           </CardContent>
         </Card>
       )}
+
+      {/* Enrichment Monitor */}
+      <EnrichmentMonitor />
     </div>
+  );
+}
+
+function EnrichmentMonitor() {
+  const [logs, setLogs] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchLogs = async () => {
+      const { data } = await supabase
+        .from('enrichment_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(10);
+
+      if (data) setLogs(data);
+    };
+
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 3000); // Poll every 3s
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <Card className="border-green-500/20 bg-green-500/5">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+          Enrichment Live Monitor
+        </CardTitle>
+        <CardDescription>Real-time feed of worker activity coming from the other app.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="rounded-md border bg-background">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Time</TableHead>
+                <TableHead>Record ID</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Match?</TableHead>
+                <TableHead>Found Data</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {logs.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                    No enrichment activity yet... waiting for orders.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                logs.map((log) => (
+                  <TableRow key={log.id}>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {new Date(log.created_at).toLocaleTimeString()}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{log.record_id?.slice(0, 8)}...</TableCell>
+                    <TableCell>
+                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${log.status === 'completed' ? 'bg-green-100 text-green-700' :
+                          log.status === 'error' ? 'bg-red-100 text-red-700' :
+                            'bg-gray-100 text-gray-700'
+                        }`}>
+                        {log.status}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      {log.details?.match_found ? '✅' : '❌'}
+                    </TableCell>
+                    <TableCell className="text-xs">
+                      {log.details?.email_found && <div>📧 {log.details.email_found}</div>}
+                      {log.details?.phone_count > 0 && <div>📱 {log.details.phone_count} phones</div>}
+                      {log.details?.error && <div className="text-red-500">{log.details.error}</div>}
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </CardContent>
+    </Card>
   );
 }

@@ -68,13 +68,40 @@ export async function POST(req: Request) {
 
         // 4. Update Supabase (using Service Role to bypass RLS)
         const supabaseAdmin = getServiceSupabase();
+
+        // Update the Lead Record
         const { error: updateError } = await supabaseAdmin
             .from(table_name)
             .update(updates)
             .eq('id', record_id);
 
+        let finalStatus = updates.enrichment_status;
+        let errorMessage = null;
+
         if (updateError) {
             console.error('Supabase Update Error:', updateError);
+            finalStatus = 'failed';
+            errorMessage = updateError.message;
+        }
+
+        // 5. Insert into Logs
+        await supabaseAdmin.from('enrichment_logs').insert({
+            record_id,
+            table_name,
+            status: finalStatus,
+            details: {
+                match_found: !!(matchResponse && matchResponse.person),
+                email_found: updates.email || null,
+                phone_count: updates.phone_numbers?.length || 0,
+                error: errorMessage,
+                apollo_data: matchResponse?.person ? {
+                    email: matchResponse.person.email,
+                    name: `${matchResponse.person.first_name} ${matchResponse.person.last_name}`
+                } : null
+            }
+        });
+
+        if (updateError) {
             return NextResponse.json({ error: `Database update failed: ${updateError.message}` }, { status: 500 });
         }
 
@@ -86,6 +113,18 @@ export async function POST(req: Request) {
 
     } catch (error: any) {
         console.error('Enrichment Worker Error:', error);
+
+        // Log the crash if possible
+        try {
+            const supabaseAdmin = getServiceSupabase();
+            await supabaseAdmin.from('enrichment_logs').insert({
+                record_id: 'unknown',
+                table_name: 'unknown',
+                status: 'error',
+                details: { error: error.message }
+            });
+        } catch (e) { /* ignore log failure */ }
+
         return NextResponse.json({ error: error.message || 'Internal Server Error' }, { status: 500 });
     }
 }
