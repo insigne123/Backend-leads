@@ -29,8 +29,15 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: 'Server misconfiguration: Missing APOLLO_API_KEY' }, { status: 500 });
         }
 
-        // 2. Call Apollo Match API
-        const matchResponse = await enrichWithApollo(apiKey, lead);
+        // 2. Call Apollo API (Match or Enrich by ID)
+        let matchResponse;
+        if (lead.apollo_id) {
+            console.log(`Enriching via Apollo ID: ${lead.apollo_id}`);
+            matchResponse = await enrichWithApolloId(apiKey, lead.apollo_id);
+        } else {
+            console.log('Enriching via Search/Match');
+            matchResponse = await enrichWithApollo(apiKey, lead);
+        }
 
         // 3. Process Results
         let updates: any = {
@@ -50,17 +57,14 @@ export async function POST(req: Request) {
                 updates.primary_phone = mobile ? mobile.sanitized_number : p.phone_numbers[0].sanitized_number;
             }
 
-            // Email Logic: Only update if we got a new valid one and it's not "email locked" override
-            // Note: Apollo match returns 'email' field.
+            // Email Logic
             if (p.email && p.email !== 'email_not_unlocked@apollo.io') {
                 updates.email = p.email;
                 updates.email_status = p.email_status || 'verified';
             } else {
-                // If Apollo didn't give a better email, keep the original one if it existed
                 console.log('Apollo did not return a revealed email. Keeping original.');
             }
 
-            // Helpful logging
             console.log(`Match Found! Email: ${p.email}, Phones: ${p.phone_numbers?.length || 0}`);
         } else {
             console.log('No match found in Apollo.');
@@ -90,6 +94,7 @@ export async function POST(req: Request) {
             table_name,
             status: finalStatus,
             details: {
+                match_method: lead.apollo_id ? 'apollo_id' : 'people_match',
                 match_found: !!(matchResponse && matchResponse.person),
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
@@ -129,10 +134,51 @@ export async function POST(req: Request) {
     }
 }
 
+async function enrichWithApolloId(apiKey: string, apolloId: string, retries = 2): Promise<any> {
+    const url = 'https://api.apollo.io/v1/people/enrich';
+
+    // Per user instructions: reveal_personal_emails: false, reveal_phone_number: true
+    const payload = {
+        api_key: apiKey,
+        id: apolloId,
+        reveal_personal_emails: false,
+        reveal_phone_number: true
+    };
+
+    try {
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache',
+                'X-Api-Key': apiKey,
+            },
+            body: JSON.stringify(payload),
+        });
+
+        if (response.status === 429 && retries > 0) {
+            console.warn('Apollo Rate Limit (429). Retrying...');
+            await delay(1500 * (3 - retries));
+            return enrichWithApolloId(apiKey, apolloId, retries - 1);
+        }
+
+        if (!response.ok) {
+            const txt = await response.text();
+            console.error(`Apollo API Error (${response.status}): ${txt}`);
+            return null;
+        }
+
+        return await response.json();
+
+    } catch (error) {
+        console.error('Apollo Fetch Error (Enrich by ID):', error);
+        return null;
+    }
+}
+
 async function enrichWithApollo(apiKey: string, lead: any, retries = 2): Promise<any> {
     const url = 'https://api.apollo.io/v1/people/match';
 
-    // Construct match payload based on available data
     const payload: any = {
         api_key: apiKey, // Apollo Match uses body param often, verify if header supported. Docs say body for match usually works best or header. Stick to header if X-Api-Key works, but for safety lets use headers as we did before.
         reveal_personal_emails: true,
