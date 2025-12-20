@@ -472,6 +472,7 @@ function EnrichmentTester() {
 
 function EnrichmentMonitor() {
   const [logs, setLogs] = useState<any[]>([]);
+  const [selectedLog, setSelectedLog] = useState<any>(null);
 
   useEffect(() => {
     const fetchLogs = async () => {
@@ -490,65 +491,101 @@ function EnrichmentMonitor() {
   }, []);
 
   return (
-    <Card className="border-green-500/20 bg-green-500/5">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
-          Enrichment Live Monitor
-        </CardTitle>
-        <CardDescription>Real-time feed of worker activity coming from the other app.</CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="rounded-md border bg-background">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Time</TableHead>
-                <TableHead>Table</TableHead>
-                <TableHead>Record ID</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Match?</TableHead>
-                <TableHead>Found Data</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {logs.length === 0 ? (
+    <>
+      <Card className="border-green-500/20 bg-green-500/5">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+            Enrichment Live Monitor
+          </CardTitle>
+          <CardDescription>Real-time feed of worker activity coming from the other app.</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="rounded-md border bg-background">
+            <Table>
+              <TableHeader>
                 <TableRow>
-                  <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
-                    No enrichment activity yet... waiting for orders.
-                  </TableCell>
+                  <TableHead>Time</TableHead>
+                  <TableHead>Table</TableHead>
+                  <TableHead>Record ID</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Match?</TableHead>
+                  <TableHead>Found Data</TableHead>
+                  <TableHead>Actions</TableHead>
                 </TableRow>
-              ) : (
-                logs.map((log) => (
-                  <TableRow key={log.id}>
-                    <TableCell className="text-xs text-muted-foreground">
-                      {new Date(log.created_at).toLocaleTimeString()}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{log.table_name}</TableCell>
-                    <TableCell className="font-mono text-xs">{log.record_id?.slice(0, 8)}...</TableCell>
-                    <TableCell>
-                      <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${log.status === 'completed' ? 'bg-green-100 text-green-700' :
-                        log.status === 'error' ? 'bg-red-100 text-red-700' :
-                          'bg-gray-100 text-gray-700'
-                        }`}>
-                        {log.status}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      {log.details?.match_found ? '✅' : '❌'}
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      {log.details?.email_found && <div>📧 {log.details.email_found}</div>}
-                      {log.details?.phone_count > 0 && <div>📱 {log.details.phone_count} phones</div>}
-                      {log.details?.error && <div className="text-red-500">{log.details.error}</div>}
+              </TableHeader>
+              <TableBody>
+                {logs.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={7} className="h-24 text-center text-muted-foreground">
+                      No enrichment activity yet... waiting for orders.
                     </TableCell>
                   </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
+                ) : (
+                  logs.map((log) => (
+                    <TableRow key={log.id}>
+                      <TableCell className="text-xs text-muted-foreground">
+                        {new Date(log.created_at).toLocaleTimeString()}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">{log.table_name}</TableCell>
+                      <TableCell className="font-mono text-xs">{log.record_id?.slice(0, 8)}...</TableCell>
+                      <TableCell>
+                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${log.status === 'completed' ? 'bg-green-100 text-green-700' :
+                          log.status === 'error' ? 'bg-red-100 text-red-700' :
+                            'bg-gray-100 text-gray-700'
+                          }`}>
+                          {log.status}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        {log.details?.match_found ? '✅' : '❌'}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {log.details?.email_found && <div>📧 {log.details.email_found}</div>}
+                        {log.details?.phone_count > 0 && <div>📱 {log.details.phone_count} phones</div>}
+                        {log.details?.error && <div className="text-red-500">{log.details.error}</div>}
+                      </TableCell>
+                      <TableCell>
+                        <Button variant="ghost" size="sm" onClick={() => setSelectedLog(log)}>View</Button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Detail Modal Overlay */}
+      {selectedLog && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+          <div className="bg-background rounded-lg shadow-lg w-full max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
+            <div className="p-4 border-b flex justify-between items-center">
+              <h3 className="text-lg font-semibold">Enrichment Details</h3>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedLog(null)}>Close</Button>
+            </div>
+            <div className="p-4 overflow-auto flex-1 grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <h4 className="font-medium text-sm text-muted-foreground">Apollo Response (Source)</h4>
+                <div className="bg-muted p-2 rounded text-xs font-mono whitespace-pre-wrap h-full overflow-auto max-h-[60vh]">
+                  {selectedLog.details?.apollo_data
+                    ? JSON.stringify(selectedLog.details.apollo_data, null, 2)
+                    : 'No Apollo data logged.'}
+                </div>
+              </div>
+              <div className="space-y-2">
+                <h4 className="font-medium text-sm text-muted-foreground">Supabase Updates (Target)</h4>
+                <div className="bg-muted p-2 rounded text-xs font-mono whitespace-pre-wrap h-full overflow-auto max-h-[60vh]">
+                  {selectedLog.details?.supabase_data
+                    ? JSON.stringify(selectedLog.details.supabase_data, null, 2)
+                    : 'No Update data logged.'}
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
-      </CardContent>
-    </Card>
+      )}
+    </>
   );
 }

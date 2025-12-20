@@ -128,10 +128,8 @@ export async function POST(req: Request) {
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
                 error: errorMessage || matchResponse?.error,
-                apollo_data: matchResponse?.person ? {
-                    email: matchResponse.person.email,
-                    name: `${matchResponse.person.first_name} ${matchResponse.person.last_name}`
-                } : null
+                supabase_data: updates, // The exact object used for the UPDATE query
+                apollo_data: matchResponse?.person || null // The full person object from Apollo
             }
         });
 

@@ -72,7 +72,9 @@ export async function POST(req: Request) {
             details: {
                 source: 'webhook',
                 email: person.email,
-                phone_count: person.phone_numbers?.length || (updates.primary_phone ? 1 : 0)
+                phone_count: person.phone_numbers?.length || (updates.primary_phone ? 1 : 0),
+                supabase_data: updates,
+                apollo_data: person
             }
         });
 
