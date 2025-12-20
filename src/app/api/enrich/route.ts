@@ -183,9 +183,9 @@ async function enrichWithApolloId(apiKey: string, apolloId: string, retries = 2)
 
         return await response.json();
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('Apollo Fetch Error (Enrich by ID):', error);
-        return null;
+        return { error: error.message || 'Unknown Fetch Error' };
     }
 }
 
@@ -230,8 +230,8 @@ async function enrichWithApollo(apiKey: string, lead: any, retries = 2): Promise
 
         return await response.json();
 
-    } catch (error) {
+    } catch (error: any) {
         console.error('Apollo Fetch Error:', error);
-        return null;
+        return { error: error.message || 'Unknown Fetch Error' };
     }
 }
