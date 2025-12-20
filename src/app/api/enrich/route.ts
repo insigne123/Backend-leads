@@ -178,7 +178,7 @@ async function enrichWithApolloId(apiKey: string, apolloId: string, retries = 2)
         if (!response.ok) {
             const txt = await response.text();
             console.error(`Apollo API Error (${response.status}): ${txt}`);
-            return null;
+            return { error: `Apollo API Error (${response.status})`, details: txt };
         }
 
         return await response.json();
@@ -202,7 +202,12 @@ async function enrichWithApollo(apiKey: string, lead: any, retries = 2): Promise
     if (lead.last_name) payload.last_name = lead.last_name;
     if (lead.email) payload.email = lead.email;
     if (lead.organization_name) payload.organization_name = lead.organization_name;
-    if (lead.organization_domain) payload.domain = lead.organization_domain;
+
+    // Cleanup domain input
+    if (lead.organization_domain) {
+        payload.domain = lead.organization_domain.replace(/^https?:\/\//, '').replace(/\/$/, '');
+    }
+
     if (lead.linkedin_url) payload.linkedin_url = lead.linkedin_url;
 
     try {
@@ -225,7 +230,7 @@ async function enrichWithApollo(apiKey: string, lead: any, retries = 2): Promise
         if (!response.ok) {
             const txt = await response.text();
             console.error(`Apollo API Error (${response.status}): ${txt}`);
-            return null;
+            return { error: `Apollo API Error (${response.status})`, details: txt };
         }
 
         return await response.json();
