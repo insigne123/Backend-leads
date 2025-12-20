@@ -64,11 +64,20 @@ export async function POST(req: Request) {
             const p = matchResponse.person;
             updates.enrichment_status = 'completed'; // If we got data immediately, mark completed
 
-            // Phone Numbers
+            // Phone Numbers Logic
             if (p.phone_numbers && p.phone_numbers.length > 0) {
                 updates.phone_numbers = p.phone_numbers;
                 const mobile = p.phone_numbers.find((qn: any) => qn.type === 'mobile');
                 updates.primary_phone = mobile ? mobile.sanitized_number : p.phone_numbers[0].sanitized_number;
+            } else if (p.organization && (p.organization.sanitized_phone || p.organization.phone)) {
+                // FALLBACK: Use Organization Phone
+                console.log('No direct phone found. Using Organization Phone fallback.');
+                updates.primary_phone = p.organization.sanitized_phone || p.organization.phone;
+                updates.phone_numbers = [{
+                    type: 'work_headquarters',
+                    sanitized_number: updates.primary_phone,
+                    number: p.organization.phone
+                }];
             }
 
             // Email Logic

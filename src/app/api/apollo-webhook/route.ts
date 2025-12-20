@@ -42,6 +42,14 @@ export async function POST(req: Request) {
             updates.phone_numbers = person.phone_numbers;
             const mobile = person.phone_numbers.find((qn: any) => qn.type === 'mobile');
             updates.primary_phone = mobile ? mobile.sanitized_number : person.phone_numbers[0].sanitized_number;
+        } else if (person.organization && (person.organization.sanitized_phone || person.organization.phone)) {
+            // FALLBACK: Use Organization Phone
+            updates.primary_phone = person.organization.sanitized_phone || person.organization.phone;
+            updates.phone_numbers = [{
+                type: 'work_headquarters',
+                sanitized_number: updates.primary_phone,
+                number: person.organization.phone
+            }];
         }
 
         // Update Supabase
@@ -64,7 +72,7 @@ export async function POST(req: Request) {
             details: {
                 source: 'webhook',
                 email: person.email,
-                phone_count: person.phone_numbers?.length || 0
+                phone_count: person.phone_numbers?.length || (updates.primary_phone ? 1 : 0)
             }
         });
 
