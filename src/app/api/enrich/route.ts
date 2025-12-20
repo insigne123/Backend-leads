@@ -4,6 +4,8 @@ import { getServiceSupabase } from '@/lib/supabase';
 // Helper for delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+const BASE_URL = 'https://studio--studio-6624658482-61b7b.us-central1.hosted.app';
+
 export async function POST(req: Request) {
     console.log('--- Starting Enrichment Request ---');
 
@@ -33,10 +35,10 @@ export async function POST(req: Request) {
         let matchResponse;
         if (lead.apollo_id) {
             console.log(`Enriching via Apollo ID: ${lead.apollo_id}`);
-            matchResponse = await enrichWithApolloId(apiKey, lead.apollo_id);
+            matchResponse = await enrichWithApolloId(apiKey, lead.apollo_id, record_id, table_name);
         } else {
             console.log('Enrichment: Enriching via Search/Match');
-            matchResponse = await enrichWithApollo(apiKey, lead);
+            matchResponse = await enrichWithApollo(apiKey, lead, record_id, table_name);
         }
 
         // --- DEBUG LOGGING START ---
@@ -52,19 +54,19 @@ export async function POST(req: Request) {
         // --- DEBUG LOGGING END ---
 
         // 3. Process Results
+        // Even with webhook, Apollo might return immediate results if cached.
         let updates: any = {
-            enrichment_status: 'failed',
+            enrichment_status: 'pending', // Default to pending since we expect webhook
             updated_at: new Date().toISOString(),
         };
 
         if (matchResponse && matchResponse.person) {
             const p = matchResponse.person;
-            updates.enrichment_status = 'completed';
+            updates.enrichment_status = 'completed'; // If we got data immediately, mark completed
 
             // Phone Numbers
             if (p.phone_numbers && p.phone_numbers.length > 0) {
                 updates.phone_numbers = p.phone_numbers;
-                // Try to find a mobile or direct number for primary
                 const mobile = p.phone_numbers.find((qn: any) => qn.type === 'mobile');
                 updates.primary_phone = mobile ? mobile.sanitized_number : p.phone_numbers[0].sanitized_number;
             }
@@ -79,7 +81,12 @@ export async function POST(req: Request) {
 
             console.log(`Match Found! Email: ${p.email}, Phones: ${p.phone_numbers?.length || 0}`);
         } else {
-            console.log('No match found in Apollo.');
+            console.log('No match found in Apollo (or async pending).');
+        }
+
+        // If we got a specific error from our wrapper
+        if (matchResponse?.error) {
+            updates.enrichment_status = 'failed';
         }
 
         // 4. Update Supabase (using Service Role to bypass RLS)
@@ -107,10 +114,11 @@ export async function POST(req: Request) {
             status: finalStatus,
             details: {
                 match_method: lead.apollo_id ? 'apollo_id' : 'people_match',
-                match_found: !!(matchResponse && matchResponse.person),
+                match_found: !!(matchResponse && matchResponse.person && !matchResponse.error),
+                is_async: true, // Note that is_async true mainly means we set a webhook
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
-                error: errorMessage,
+                error: errorMessage || matchResponse?.error,
                 apollo_data: matchResponse?.person ? {
                     email: matchResponse.person.email,
                     name: `${matchResponse.person.first_name} ${matchResponse.person.last_name}`
@@ -147,15 +155,19 @@ export async function POST(req: Request) {
     }
 }
 
-async function enrichWithApolloId(apiKey: string, apolloId: string, retries = 2): Promise<any> {
+async function enrichWithApolloId(apiKey: string, apolloId: string, recordId: string, tableName: string, retries = 2): Promise<any> {
     const url = 'https://api.apollo.io/v1/people/enrich';
+
+    // Construct Webhook URL
+    const webhookUrl = `${BASE_URL}/api/apollo-webhook?record_id=${recordId}&table_name=${tableName}`;
 
     // Per user instructions: reveal_personal_emails: false, reveal_phone_number: true
     const payload = {
         api_key: apiKey,
         id: apolloId,
         reveal_personal_emails: false,
-        reveal_phone_number: true
+        reveal_phone_number: true,
+        webhook_url: webhookUrl
     };
 
     try {
@@ -172,7 +184,7 @@ async function enrichWithApolloId(apiKey: string, apolloId: string, retries = 2)
         if (response.status === 429 && retries > 0) {
             console.warn('Apollo Rate Limit (429). Retrying...');
             await delay(1500 * (3 - retries));
-            return enrichWithApolloId(apiKey, apolloId, retries - 1);
+            return enrichWithApolloId(apiKey, apolloId, recordId, tableName, retries - 1);
         }
 
         if (!response.ok) {
@@ -189,13 +201,17 @@ async function enrichWithApolloId(apiKey: string, apolloId: string, retries = 2)
     }
 }
 
-async function enrichWithApollo(apiKey: string, lead: any, retries = 2): Promise<any> {
+async function enrichWithApollo(apiKey: string, lead: any, recordId: string, tableName: string, retries = 2): Promise<any> {
     const url = 'https://api.apollo.io/v1/people/match';
 
+    // Construct Webhook URL
+    const webhookUrl = `${BASE_URL}/api/apollo-webhook?record_id=${recordId}&table_name=${tableName}`;
+
     const payload: any = {
-        api_key: apiKey, // Apollo Match uses body param often, verify if header supported. Docs say body for match usually works best or header. Stick to header if X-Api-Key works, but for safety lets use headers as we did before.
+        api_key: apiKey,
         reveal_personal_emails: true,
         reveal_phone_number: true,
+        webhook_url: webhookUrl
     };
 
     if (lead.first_name) payload.first_name = lead.first_name;
@@ -224,7 +240,7 @@ async function enrichWithApollo(apiKey: string, lead: any, retries = 2): Promise
         if (response.status === 429 && retries > 0) {
             console.warn('Apollo Rate Limit (429). Retrying...');
             await delay(1500 * (3 - retries)); // Exponential-ish backoff
-            return enrichWithApollo(apiKey, lead, retries - 1);
+            return enrichWithApollo(apiKey, lead, recordId, tableName, retries - 1);
         }
 
         if (!response.ok) {
