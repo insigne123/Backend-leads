@@ -125,7 +125,8 @@ export async function POST(req: Request) {
         return NextResponse.json({
             success: true,
             enrichment_status: updates.enrichment_status,
-            data_found: !!(matchResponse && matchResponse.person)
+            data_found: !!(matchResponse && matchResponse.person),
+            debug_apollo_response: matchResponse // Expose for debugging
         });
 
     } catch (error: any) {
