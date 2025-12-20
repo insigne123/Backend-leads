@@ -304,8 +304,169 @@ export default function Home() {
       )}
 
       {/* Enrichment Monitor */}
-      <EnrichmentMonitor />
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        <EnrichmentMonitor />
+        <EnrichmentTester />
+      </div>
     </div>
+  );
+}
+
+function EnrichmentTester() {
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<any>(null);
+
+  // Form State
+  const [tableName, setTableName] = useState('enriched_leads');
+  const [recordId, setRecordId] = useState('test-id-1');
+  const [apolloId, setApolloId] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [domain, setDomain] = useState('');
+  const [company, setCompany] = useState('');
+
+  const handleTest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setResult(null);
+
+    try {
+      const payload = {
+        table_name: tableName,
+        record_id: recordId,
+        lead: {
+          apollo_id: apolloId || undefined,
+          first_name: firstName,
+          last_name: lastName,
+          email: '', // Allow manual input if needed later
+          organization_name: company,
+          organization_domain: domain,
+        }
+      };
+
+      // We need to bypass the secret key check for this local test or provide it.
+      // Since this is a client-side call, we can't easily inject the server-side secret.
+      // FOR TESTING ONLY: You might need to temporarily allow requests without the key OR
+      // pass a specific header if you know it.
+      // HOWEVER, for security, the API requires `x-api-secret-key`. 
+      // We will ask the user to input it for the test or hardcode it if they are testing locally.
+      // Let's assume for this local tool we might fail auth if we don't send it.
+      // Let's adding a "Test Secret" field or similar? 
+      // Actually, since we are in the same app, let's just use a hardcoded dev key if env matches, 
+      // but the browser doesn't know the server env.
+
+      // IMPORTANT: Real world you wouldn't expose this UI publicly.
+      // We will add a prompt for the secret key in the form to be safe.
+    } catch (err) {
+      // ...
+    }
+    // Retrying logic above nicely inside the component...
+  };
+
+  // Re-writing the component properly:
+
+  const [secretKey, setSecretKey] = useState('');
+
+  const runTest = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setLoading(true);
+    setResult(null);
+
+    try {
+      const res = await fetch('/api/enrich', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-secret-key': secretKey
+        },
+        body: JSON.stringify({
+          table_name: tableName,
+          record_id: recordId,
+          lead: {
+            apollo_id: apolloId || undefined,
+            first_name: firstName,
+            last_name: lastName,
+            organization_name: company,
+            organization_domain: domain
+          }
+        })
+      });
+
+      const data = await res.json();
+      setResult(data);
+    } catch (error: any) {
+      setResult({ error: error.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <Card className="border-blue-500/20 bg-blue-500/5 h-fit">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <div className="w-2 h-2 rounded-full bg-blue-500" />
+          Enrichment Tester
+        </CardTitle>
+        <CardDescription>Manually trigger enrichment to debug missing phones/data.</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <form onSubmit={runTest} className="space-y-4">
+          <div className="space-y-2">
+            <Label>API Secret Key (Required)</Label>
+            <Input type="password" value={secretKey} onChange={e => setSecretKey(e.target.value)} placeholder="Enter valid x-api-secret-key" required />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-2">
+              <Label>Table Name</Label>
+              <Input value={tableName} onChange={e => setTableName(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Record ID</Label>
+              <Input value={recordId} onChange={e => setRecordId(e.target.value)} />
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label>Apollo ID (Optional, overrides others)</Label>
+            <Input value={apolloId} onChange={e => setApolloId(e.target.value)} placeholder="Target specific Apollo ID" />
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-2">
+              <Label>First Name</Label>
+              <Input value={firstName} onChange={e => setFirstName(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Last Name</Label>
+              <Input value={lastName} onChange={e => setLastName(e.target.value)} />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-2">
+              <Label>Company</Label>
+              <Input value={company} onChange={e => setCompany(e.target.value)} />
+            </div>
+            <div className="space-y-2">
+              <Label>Domain</Label>
+              <Input value={domain} onChange={e => setDomain(e.target.value)} placeholder="microsoft.com" />
+            </div>
+          </div>
+
+          <Button type="submit" className="w-full" variant="secondary" disabled={loading}>
+            {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : 'Test Enrichment'}
+          </Button>
+
+          {result && (
+            <div className="mt-4 p-2 bg-background rounded border text-xs font-mono overflow-auto max-h-60">
+              <pre>{JSON.stringify(result, null, 2)}</pre>
+            </div>
+          )}
+        </form>
+      </CardContent>
+    </Card>
   );
 }
 
@@ -365,8 +526,8 @@ function EnrichmentMonitor() {
                     <TableCell className="font-mono text-xs">{log.record_id?.slice(0, 8)}...</TableCell>
                     <TableCell>
                       <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${log.status === 'completed' ? 'bg-green-100 text-green-700' :
-                          log.status === 'error' ? 'bg-red-100 text-red-700' :
-                            'bg-gray-100 text-gray-700'
+                        log.status === 'error' ? 'bg-red-100 text-red-700' :
+                          'bg-gray-100 text-gray-700'
                         }`}>
                         {log.status}
                       </span>

@@ -35,9 +35,21 @@ export async function POST(req: Request) {
             console.log(`Enriching via Apollo ID: ${lead.apollo_id}`);
             matchResponse = await enrichWithApolloId(apiKey, lead.apollo_id);
         } else {
-            console.log('Enriching via Search/Match');
+            console.log('Enrichment: Enriching via Search/Match');
             matchResponse = await enrichWithApollo(apiKey, lead);
         }
+
+        // --- DEBUG LOGGING START ---
+        console.log('--- RAW APOLLO RESPONSE ---');
+        console.log(JSON.stringify(matchResponse, null, 2));
+        console.log('---------------------------');
+
+        if (matchResponse?.person?.phone_numbers) {
+            console.log('Phone numbers found explicitly:', matchResponse.person.phone_numbers);
+        } else {
+            console.log('No phone_numbers array in matchResponse.person');
+        }
+        // --- DEBUG LOGGING END ---
 
         // 3. Process Results
         let updates: any = {
