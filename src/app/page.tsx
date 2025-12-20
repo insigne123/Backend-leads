@@ -504,6 +504,7 @@ function EnrichmentMonitor() {
             <TableHeader>
               <TableRow>
                 <TableHead>Time</TableHead>
+                <TableHead>Table</TableHead>
                 <TableHead>Record ID</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>Match?</TableHead>
@@ -513,7 +514,7 @@ function EnrichmentMonitor() {
             <TableBody>
               {logs.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={5} className="h-24 text-center text-muted-foreground">
+                  <TableCell colSpan={6} className="h-24 text-center text-muted-foreground">
                     No enrichment activity yet... waiting for orders.
                   </TableCell>
                 </TableRow>
@@ -523,6 +524,7 @@ function EnrichmentMonitor() {
                     <TableCell className="text-xs text-muted-foreground">
                       {new Date(log.created_at).toLocaleTimeString()}
                     </TableCell>
+                    <TableCell className="font-mono text-xs">{log.table_name}</TableCell>
                     <TableCell className="font-mono text-xs">{log.record_id?.slice(0, 8)}...</TableCell>
                     <TableCell>
                       <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-medium ${log.status === 'completed' ? 'bg-green-100 text-green-700' :
