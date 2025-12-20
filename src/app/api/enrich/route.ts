@@ -143,7 +143,8 @@ export async function POST(req: Request) {
             success: true,
             enrichment_status: updates.enrichment_status,
             data_found: !!(matchResponse && matchResponse.person),
-            debug_apollo_response: matchResponse // Expose for debugging
+            debug_apollo_response: matchResponse, // Expose for debugging
+            extracted_data: updates // Expose what we are saving to Supabase
         });
 
     } catch (error: any) {
