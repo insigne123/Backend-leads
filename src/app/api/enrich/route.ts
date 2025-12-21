@@ -131,6 +131,7 @@ export async function POST(req: Request) {
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
                 db_update_count: dbUpdateCount,
+                post_update_db_state: updatedData,
                 error: errorMessage || matchResponse?.error,
                 supabase_data: updates,
                 apollo_data: matchResponse?.person || null
