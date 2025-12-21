@@ -145,6 +145,8 @@ export async function POST(req: Request) {
         const dbUpdateCount = Array.isArray(updatedData) ? updatedData.length : 0;
 
         // 5. Insert into Logs
+        const keyPrefix = process.env.SUPABASE_SERVICE_ROLE_KEY?.substring(0, 5) || 'NONE';
+
         await supabaseAdmin.from('enrichment_logs').insert({
             record_id,
             table_name,
@@ -153,6 +155,7 @@ export async function POST(req: Request) {
                 match_method: lead.apollo_id ? 'apollo_id' : 'people_match',
                 match_found: !!(matchResponse && matchResponse.person && !matchResponse.error),
                 is_async: true,
+                key_prefix: keyPrefix, // DEBUG KEY
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
                 db_update_count: dbUpdateCount,
