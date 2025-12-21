@@ -562,7 +562,17 @@ function EnrichmentMonitor() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
           <div className="bg-background rounded-lg shadow-lg w-full max-w-4xl max-h-[80vh] overflow-hidden flex flex-col">
             <div className="p-4 border-b flex justify-between items-center">
-              <h3 className="text-lg font-semibold">Enrichment Details</h3>
+              <div className="flex items-center gap-4">
+                <h3 className="text-lg font-semibold">Enrichment Details</h3>
+                {selectedLog.details?.db_update_count !== undefined && (
+                  <span className={`px-2 py-1 rounded text-xs font-bold ${selectedLog.details.db_update_count > 0
+                      ? 'bg-green-100 text-green-700'
+                      : 'bg-red-100 text-red-700'
+                    }`}>
+                    Rows Updated: {selectedLog.details.db_update_count}
+                  </span>
+                )}
+              </div>
               <Button variant="ghost" size="sm" onClick={() => setSelectedLog(null)}>Close</Button>
             </div>
             <div className="p-4 overflow-auto flex-1 grid grid-cols-2 gap-4">
