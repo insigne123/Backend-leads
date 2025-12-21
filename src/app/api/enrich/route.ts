@@ -102,10 +102,11 @@ export async function POST(req: Request) {
         const supabaseAdmin = getServiceSupabase();
 
         // Update the Lead Record
-        const { error: updateError } = await supabaseAdmin
+        const { error: updateError, data: updatedData } = await supabaseAdmin
             .from(table_name)
             .update(updates)
-            .eq('id', record_id);
+            .eq('id', record_id)
+            .select();
 
         let finalStatus = updates.enrichment_status;
         let errorMessage = null;
@@ -116,6 +117,8 @@ export async function POST(req: Request) {
             errorMessage = updateError.message;
         }
 
+        const dbUpdateCount = Array.isArray(updatedData) ? updatedData.length : 0;
+
         // 5. Insert into Logs
         await supabaseAdmin.from('enrichment_logs').insert({
             record_id,
@@ -124,12 +127,13 @@ export async function POST(req: Request) {
             details: {
                 match_method: lead.apollo_id ? 'apollo_id' : 'people_match',
                 match_found: !!(matchResponse && matchResponse.person && !matchResponse.error),
-                is_async: true, // Note that is_async true mainly means we set a webhook
+                is_async: true,
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
+                db_update_count: dbUpdateCount,
                 error: errorMessage || matchResponse?.error,
-                supabase_data: updates, // The exact object used for the UPDATE query
-                apollo_data: matchResponse?.person || null // The full person object from Apollo
+                supabase_data: updates,
+                apollo_data: matchResponse?.person || null
             }
         });
 
