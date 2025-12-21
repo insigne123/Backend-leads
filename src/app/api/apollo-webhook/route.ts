@@ -54,15 +54,19 @@ export async function POST(req: Request) {
 
         // Update Supabase
         const supabaseAdmin = getServiceSupabase();
-        const { error: updateError } = await supabaseAdmin
+        const { error: updateError, data } = await supabaseAdmin
             .from(table_name)
             .update(updates)
-            .eq('id', record_id);
+            .eq('id', record_id)
+            .select(); // Return the updated rows to verify
 
         if (updateError) {
             console.error('Webhook Supabase Error:', updateError);
             return NextResponse.json({ error: 'Database update failed' }, { status: 500 });
         }
+
+        const updatedCount = Array.isArray(data) ? data.length : 0;
+        console.log(`Webhook: Updated ${updatedCount} rows in ${table_name}`);
 
         // Log success
         await supabaseAdmin.from('enrichment_logs').insert({
@@ -73,6 +77,7 @@ export async function POST(req: Request) {
                 source: 'webhook',
                 email: person.email,
                 phone_count: person.phone_numbers?.length || (updates.primary_phone ? 1 : 0),
+                db_update_count: updatedCount,
                 supabase_data: updates,
                 apollo_data: person
             }
