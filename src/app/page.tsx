@@ -566,8 +566,8 @@ function EnrichmentMonitor() {
                 <h3 className="text-lg font-semibold">Enrichment Details</h3>
                 {selectedLog.details?.db_update_count !== undefined && (
                   <span className={`px-2 py-1 rounded text-xs font-bold ${selectedLog.details.db_update_count > 0
-                      ? 'bg-green-100 text-green-700'
-                      : 'bg-red-100 text-red-700'
+                    ? 'bg-green-100 text-green-700'
+                    : 'bg-red-100 text-red-700'
                     }`}>
                     Rows Updated: {selectedLog.details.db_update_count}
                   </span>
@@ -591,6 +591,14 @@ function EnrichmentMonitor() {
                     ? JSON.stringify(selectedLog.details.supabase_data, null, 2)
                     : 'No Update data logged.'}
                 </div>
+                {selectedLog.details?.post_update_db_state && (
+                  <div className="mt-4 border-t pt-2">
+                    <h4 className="font-medium text-sm text-green-600 mb-1">✅ Actual DB Result (Post-Update):</h4>
+                    <div className="bg-green-50 p-2 rounded text-xs font-mono whitespace-pre-wrap">
+                      {JSON.stringify(selectedLog.details.post_update_db_state, null, 2)}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           </div>

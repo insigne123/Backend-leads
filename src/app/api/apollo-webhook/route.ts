@@ -78,6 +78,7 @@ export async function POST(req: Request) {
                 email: person.email,
                 phone_count: person.phone_numbers?.length || (updates.primary_phone ? 1 : 0),
                 db_update_count: updatedCount,
+                post_update_db_state: data,
                 supabase_data: updates,
                 apollo_data: person
             }
