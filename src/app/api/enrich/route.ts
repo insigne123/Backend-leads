@@ -18,7 +18,9 @@ export async function POST(req: Request) {
 
     try {
         const body = await req.json();
-        const { record_id, lead, config, table_name } = body;
+        const { lead, config } = body;
+        const record_id = (body.record_id as string)?.trim();
+        const table_name = (body.table_name as string)?.trim() || 'enriched_leads';
 
         if (!record_id || !lead || !table_name) {
             return NextResponse.json({ error: 'Missing required fields: record_id, lead, or table_name' }, { status: 400 });
@@ -101,14 +103,23 @@ export async function POST(req: Request) {
         // 4. Update Supabase (using Service Role to bypass RLS)
         const supabaseAdmin = getServiceSupabase();
 
-        // Update the Lead Record
+        // Debug: Check if row exists before update
+        const { data: checkData, error: checkError } = await supabaseAdmin
+            .from(table_name)
+            .select('id')
+            .eq('id', record_id)
+            .single();
+
+        const rowExists = !!checkData;
+        console.log(`Debug Check: Row ${record_id} exists? ${rowExists}`);
+
         const { error: updateError, data: updatedData } = await supabaseAdmin
             .from(table_name)
             .update(updates)
             .eq('id', record_id)
             .select();
 
-        let finalStatus = updates.enrichment_status;
+        let finalStatus = 'completed';
         let errorMessage = null;
 
         if (updateError) {
@@ -131,6 +142,8 @@ export async function POST(req: Request) {
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
                 db_update_count: dbUpdateCount,
+                row_check_found: rowExists, // Start debugging here
+                check_error: checkError?.message || null,
                 post_update_db_state: updatedData,
                 error: errorMessage || matchResponse?.error,
                 supabase_data: updates,

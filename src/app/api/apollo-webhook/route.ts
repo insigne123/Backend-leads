@@ -6,8 +6,8 @@ export async function POST(req: Request) {
 
     try {
         const url = new URL(req.url);
-        const record_id = url.searchParams.get('record_id');
-        const table_name = url.searchParams.get('table_name');
+        const record_id = url.searchParams.get('record_id')?.trim();
+        const table_name = url.searchParams.get('table_name')?.trim();
 
         if (!record_id || !table_name) {
             console.error('Webhook Error: Missing record_id or table_name in query params');
