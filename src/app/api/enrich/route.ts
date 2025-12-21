@@ -100,18 +100,32 @@ export async function POST(req: Request) {
             updates.enrichment_status = 'failed';
         }
 
-        // 4. Update Supabase (using Service Role to bypass RLS)
+        // 4. Update Supabase
         const supabaseAdmin = getServiceSupabase();
 
-        // Debug: Check if row exists before update
-        const { data: checkData, error: checkError } = await supabaseAdmin
-            .from(table_name)
-            .select('id')
-            .eq('id', record_id)
-            .single();
+        // 4.1 Retry Logic: Wait for row to exist (Race Condition Fix)
+        let rowExists = false;
+        let attempts = 0;
+        const maxAttempts = 3;
 
-        const rowExists = !!checkData;
-        console.log(`Debug Check: Row ${record_id} exists? ${rowExists}`);
+        while (attempts < maxAttempts && !rowExists) {
+            attempts++;
+            const { data: checkData } = await supabaseAdmin
+                .from(table_name)
+                .select('id')
+                .eq('id', record_id)
+                .single();
+
+            if (checkData) {
+                rowExists = true;
+                console.log(`Row found on attempt ${attempts}`);
+            } else {
+                console.log(`Attempt ${attempts}: Row ${record_id} not found yet. Waiting...`);
+                if (attempts < maxAttempts) await new Promise(res => setTimeout(res, 2000)); // Wait 2s
+            }
+        }
+
+        console.log(`Debug Check: Row ${record_id} exists? ${rowExists} after ${attempts} attempts`);
 
         const { error: updateError, data: updatedData } = await supabaseAdmin
             .from(table_name)
@@ -142,8 +156,8 @@ export async function POST(req: Request) {
                 email_found: updates.email || null,
                 phone_count: updates.phone_numbers?.length || 0,
                 db_update_count: dbUpdateCount,
-                row_check_found: rowExists, // Start debugging here
-                check_error: checkError?.message || null,
+                row_check_found: rowExists,
+                check_error: !rowExists ? 'Row not found after retries' : null,
                 post_update_db_state: updatedData,
                 error: errorMessage || matchResponse?.error,
                 supabase_data: updates,

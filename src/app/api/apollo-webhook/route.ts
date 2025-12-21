@@ -54,7 +54,32 @@ export async function POST(req: Request) {
 
         // Update Supabase
         const supabaseAdmin = getServiceSupabase();
-        const { error: updateError, data } = await supabaseAdmin
+
+        // Retry Logic for Race Condition
+        let rowExists = false;
+        let attempts = 0;
+        const maxAttempts = 3;
+
+        while (attempts < maxAttempts && !rowExists) {
+            attempts++;
+            const { data: checkData } = await supabaseAdmin
+                .from(table_name)
+                .select('id')
+                .eq('id', record_id)
+                .single();
+
+            if (checkData) {
+                rowExists = true;
+                console.log(`Webhook: Row found on attempt ${attempts}`);
+            } else {
+                console.log(`Webhook: Attempt ${attempts}: Row ${record_id} not found yet. Waiting...`);
+                if (attempts < maxAttempts) await new Promise(res => setTimeout(res, 2000));
+            }
+        }
+
+        console.log(`Webhook Debug: Row exists? ${rowExists}`);
+
+        const { error: updateError, data: updatedData } = await supabaseAdmin
             .from(table_name)
             .update(updates)
             .eq('id', record_id)
@@ -65,7 +90,7 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: 'Database update failed' }, { status: 500 });
         }
 
-        const updatedCount = Array.isArray(data) ? data.length : 0;
+        const updatedCount = Array.isArray(updatedData) ? updatedData.length : 0;
         console.log(`Webhook: Updated ${updatedCount} rows in ${table_name}`);
 
         // Log success
@@ -78,7 +103,9 @@ export async function POST(req: Request) {
                 email: person.email,
                 phone_count: person.phone_numbers?.length || (updates.primary_phone ? 1 : 0),
                 db_update_count: updatedCount,
-                post_update_db_state: data,
+                row_check_found: rowExists,
+                check_error: !rowExists ? 'Row not found after retries' : null,
+                post_update_db_state: updatedData,
                 supabase_data: updates,
                 apollo_data: person
             }
