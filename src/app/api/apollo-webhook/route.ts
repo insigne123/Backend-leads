@@ -94,12 +94,16 @@ export async function POST(req: Request) {
         console.log(`Webhook: Updated ${updatedCount} rows in ${table_name}`);
 
         // Log success
+        const keyPrefix = process.env.SUPABASE_SERVICE_ROLE_KEY?.substring(0, 5) || 'NONE';
+        console.log(`Debug: Using Service Key starting with: ${keyPrefix}...`);
+
         await supabaseAdmin.from('enrichment_logs').insert({
             record_id,
             table_name,
             status: 'webhook_received',
             details: {
                 source: 'webhook',
+                key_prefix: keyPrefix, // EXPOSE THE KEY PREFIX
                 email: person.email,
                 phone_count: person.phone_numbers?.length || (updates.primary_phone ? 1 : 0),
                 db_update_count: updatedCount,
