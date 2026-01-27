@@ -324,6 +324,11 @@ async function fetchPeople(
             const data = await response.json();
             const newPeople = data.people || [];
 
+            if (newPeople.length > 0) {
+                // DEBUG: Log the first person to verify field names (specifically linkedin_url)
+                log('DEBUG: First Person Structure:', JSON.stringify(newPeople[0], null, 2));
+            }
+
             if (newPeople.length === 0) {
                 log("No people found in this page.");
                 break;
