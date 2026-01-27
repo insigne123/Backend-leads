@@ -17,6 +17,16 @@ export async function POST(req: Request) {
     // Check if the key matches (Header takes precedence, then Query)
     const providedKey = secretKeyHeader || secretKeyQuery;
 
+    // DEBUG AUTH
+    console.log('--- AUTH DEBUG ---');
+    console.log(`URL: ${url.toString()}`);
+    console.log(`Header Key Present: ${!!secretKeyHeader}`);
+    console.log(`Query Key Present: ${!!secretKeyQuery}`);
+    console.log(`Env Key Configured: ${!!process.env.API_SECRET_KEY}`);
+    if (process.env.API_SECRET_KEY) console.log(`Env Key First 3 chars: ${process.env.API_SECRET_KEY.substring(0, 3)}`);
+    if (providedKey) console.log(`Provided Key First 3 chars: ${providedKey.substring(0, 3)}`);
+    console.log('------------------');
+
     if (providedKey !== process.env.API_SECRET_KEY) {
         console.warn('Unauthorized access attempt: Invalid or Missing Secret Key');
         return NextResponse.json({ error: 'Unauthorized: Missing valid x-api-secret-key header or secret_key param' }, { status: 401 });
