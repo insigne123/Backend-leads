@@ -281,25 +281,38 @@ async function fetchPeople(
 
     while (people.length < filters.max_results) {
         try {
-            const payload = {
+            // Build query params (Apollo docs show arrays using [] in the URL)
+            const params = new URLSearchParams();
+            params.set("page", String(page));
+            params.set("per_page", String(perPage));
+
+            for (const id of organizationIds ?? []) params.append("organization_ids[]", id);
+            for (const t of filters.titles ?? []) params.append("person_titles[]", t);
+            for (const s of filters.seniorities ?? []) params.append("person_seniorities[]", s);
+
+            // Keep a payload for logging/debug (even if request uses query params)
+            const debugPayload = {
                 organization_ids: organizationIds,
-                page: page,
+                page,
                 per_page: perPage,
                 person_titles: filters.titles,
                 person_seniorities: filters.seniorities,
             };
 
-            log(`Fetching People (Page ${page}) Payload:`, payload);
+            log(`Fetching People (Page ${page}) Params: ${params.toString()}`, debugPayload);
 
-            // Use X-Api-Key header
-            const response = await fetch('https://api.apollo.io/v1/mixed_people/search', {
-                method: 'POST',
+            const url = `https://api.apollo.io/api/v1/mixed_people/api_search?${params.toString()}`;
+
+            const response = await fetch(url, {
+                method: "POST",
                 headers: {
-                    'Content-Type': 'application/json',
-                    'Cache-Control': 'no-cache',
-                    'X-Api-Key': apiKey,
+                    "Content-Type": "application/json",
+                    "Cache-Control": "no-cache",
+                    "accept": "application/json",
+                    "x-api-key": apiKey,
                 },
-                body: JSON.stringify(payload),
+                // Apollo allows raw body, but official example uses query params with empty body
+                body: "{}",
             });
 
             if (!response.ok) {
@@ -312,18 +325,17 @@ async function fetchPeople(
             const newPeople = data.people || [];
 
             if (newPeople.length === 0) {
-                log('No people found in this page.');
+                log("No people found in this page.");
                 break;
             }
 
-            people = [...people, ...newPeople];
+            people = people.concat(newPeople);
             page++;
 
             if (people.length >= filters.max_results) break;
-            if (page > 10) break;
-
+            if (page > 10) break; // Limit
         } catch (error) {
-            log('Error fetching people:', error);
+            log("Error fetching people:", error);
             break;
         }
     }
