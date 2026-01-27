@@ -10,10 +10,16 @@ export async function POST(req: Request) {
     console.log('--- Starting Enrichment Request ---');
 
     // 1. Security Check
-    const secretKey = req.headers.get('x-api-secret-key');
-    if (secretKey !== process.env.API_SECRET_KEY) {
-        console.warn('Unauthorized access attempt: Invalid Secret Key');
-        return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const url = new URL(req.url);
+    const secretKeyHeader = req.headers.get('x-api-secret-key');
+    const secretKeyQuery = url.searchParams.get('secret_key');
+
+    // Check if the key matches (Header takes precedence, then Query)
+    const providedKey = secretKeyHeader || secretKeyQuery;
+
+    if (providedKey !== process.env.API_SECRET_KEY) {
+        console.warn('Unauthorized access attempt: Invalid or Missing Secret Key');
+        return NextResponse.json({ error: 'Unauthorized: Missing valid x-api-secret-key header or secret_key param' }, { status: 401 });
     }
 
     try {
