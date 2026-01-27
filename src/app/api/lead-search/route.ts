@@ -351,19 +351,16 @@ async function fetchPeople(
 async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (msg: string, data?: any) => void) {
     if (leads.length === 0) return;
 
-    const validLeads = leads.filter(lead => lead.linkedin_url);
-    if (leads.length > validLeads.length) {
-        log(`Skipped ${leads.length - validLeads.length} leads due to missing LinkedIn URL.`);
-    }
+    // Remove filter and debug logs
+    // The new API may return sparse data (no linkedin_url, obfuscated last_name).
+    // We map missing required fields to empty strings to satisfy DB constraints.
 
-    if (validLeads.length === 0) return;
-
-    const records = validLeads.map((lead) => ({
+    const records = leads.map((lead: any) => ({
         id: lead.id,
         first_name: lead.first_name,
-        last_name: lead.last_name,
-        email: lead.email,
-        linkedin_url: lead.linkedin_url,
+        last_name: lead.last_name || lead.last_name_obfuscated || '',
+        email: lead.email || null, // Email might be missing in search view
+        linkedin_url: lead.linkedin_url || '', // Bypass NOT NULL constraint with empty string
         organization_name: lead.organization?.name,
         title: lead.title,
         batch_run_id: batchRunId,
