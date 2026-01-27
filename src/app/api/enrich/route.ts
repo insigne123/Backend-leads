@@ -82,6 +82,29 @@ export async function POST(req: Request) {
             const p = matchResponse.person;
             updates.enrichment_status = 'completed'; // If we got data immediately, mark completed
 
+            // Basic Fields - Fill if available
+            if (p.first_name) updates.first_name = p.first_name;
+            if (p.last_name) updates.last_name = p.last_name;
+            if (p.linkedin_url) updates.linkedin_url = p.linkedin_url;
+            if (p.title) updates.title = p.title;
+
+            // Location Data
+            if (p.city) updates.city = p.city;
+            if (p.state) updates.state = p.state;
+            if (p.country) updates.country = p.country;
+
+            // Professional Info
+            if (p.headline) updates.headline = p.headline;
+            if (p.photo_url) updates.photo_url = p.photo_url;
+            if (p.seniority) updates.seniority = p.seniority;
+            if (p.departments && p.departments.length > 0) updates.departments = p.departments;
+
+            // Organization Data
+            if (p.organization?.name) updates.organization_name = p.organization.name;
+            if (p.organization?.primary_domain) updates.organization_domain = p.organization.primary_domain;
+            if (p.organization?.industry) updates.organization_industry = p.organization.industry;
+            if (p.organization?.estimated_num_employees) updates.organization_size = p.organization.estimated_num_employees;
+
             // Phone Numbers Logic
             if (p.phone_numbers && p.phone_numbers.length > 0) {
                 updates.phone_numbers = p.phone_numbers;
@@ -106,7 +129,7 @@ export async function POST(req: Request) {
                 console.log('Apollo did not return a revealed email. Keeping original.');
             }
 
-            console.log(`Match Found! Email: ${p.email}, Phones: ${p.phone_numbers?.length || 0}`);
+            console.log(`Match Found! Email: ${p.email}, Phones: ${p.phone_numbers?.length || 0}, Location: ${p.city}, ${p.state}, ${p.country}`);
         } else {
             console.log('No match found in Apollo (or async pending).');
         }
