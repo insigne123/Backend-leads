@@ -271,6 +271,7 @@ export default function Home() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead>ID</TableHead>
                     <TableHead>Name</TableHead>
                     <TableHead>Title</TableHead>
                     <TableHead>Company</TableHead>
@@ -281,6 +282,9 @@ export default function Home() {
                 <TableBody>
                   {leads.map((lead) => (
                     <TableRow key={lead.id}>
+                      <TableCell className="font-mono text-xs text-muted-foreground" title="Click to ID" >
+                        {lead.id.substring(0, 8)}...
+                      </TableCell>
                       <TableCell className="font-medium">{lead.first_name} {lead.last_name}</TableCell>
                       <TableCell>{lead.title}</TableCell>
                       <TableCell>{lead.organization?.name || lead.organization_name}</TableCell>
