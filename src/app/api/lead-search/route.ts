@@ -346,7 +346,14 @@ async function fetchPeople(
 async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (msg: string, data?: any) => void) {
     if (leads.length === 0) return;
 
-    const records = leads.map((lead) => ({
+    const validLeads = leads.filter(lead => lead.linkedin_url);
+    if (leads.length > validLeads.length) {
+        log(`Skipped ${leads.length - validLeads.length} leads due to missing LinkedIn URL.`);
+    }
+
+    if (validLeads.length === 0) return;
+
+    const records = validLeads.map((lead) => ({
         id: lead.id,
         first_name: lead.first_name,
         last_name: lead.last_name,
