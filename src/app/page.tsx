@@ -373,7 +373,7 @@ function EnrichmentTester() {
     setResult(null);
 
     try {
-      const res = await fetch('/api/enrich', {
+      const res = await fetch(`/api/enrich?secret_key=${encodeURIComponent(secretKey)}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
