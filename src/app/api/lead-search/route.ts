@@ -7,11 +7,13 @@ import crypto from 'crypto';
 interface LeadSearchRequest {
     user_id: string; // Added user_id
     industry_keywords?: string[];
+    company_keyword_tags?: string[];
     company_location?: string[];
     titles?: string[];
     seniorities?: string[];
     employee_ranges?: string[];
     max_results?: number;
+    companies_only?: boolean;
 }
 
 // Apollo API Types (Simplified)
@@ -47,11 +49,13 @@ export async function POST(req: Request) {
         const {
             user_id,
             industry_keywords,
+            company_keyword_tags,
             company_location,
             titles,
             seniorities,
             employee_ranges,
             max_results = 100,
+            companies_only = false,
         } = body;
 
         if (!user_id) {
@@ -69,15 +73,32 @@ export async function POST(req: Request) {
             );
         }
 
+        const normalizedKeywordTags = (company_keyword_tags && company_keyword_tags.length > 0
+            ? company_keyword_tags
+            : industry_keywords
+        )
+            ?.map((tag) => tag?.trim())
+            .filter((tag): tag is string => Boolean(tag));
+
+        const normalizedLocations = company_location
+            ?.map((location) => location?.trim())
+            .filter((location): location is string => Boolean(location));
+
         const batchRunId = uuidv4();
         log(`Starting batch run: ${batchRunId} for user: ${user_id}`);
         log('Request Body:', body);
+        log('Resolved Company Filters:', {
+            company_keyword_tags: normalizedKeywordTags,
+            organization_locations: normalizedLocations,
+            organization_num_employees_ranges: employee_ranges,
+            companies_only,
+        });
 
         // --- Pagination Logic Start ---
         // 1. Generate Filter Hash
         const filtersForHash = {
-            industry_keywords,
-            company_location,
+            company_keyword_tags: normalizedKeywordTags,
+            company_location: normalizedLocations,
             employee_ranges,
             // We only hash company filters because that's what we paginate
         };
@@ -107,8 +128,8 @@ export async function POST(req: Request) {
 
         // Step 1: Search Companies
         const { companies, lastPageFetched } = await fetchCompanies(apiKey, {
-            industry_keywords,
-            company_location,
+            company_keyword_tags: normalizedKeywordTags,
+            company_location: normalizedLocations,
             employee_ranges,
             max_results,
             start_page: startPage
@@ -137,8 +158,19 @@ export async function POST(req: Request) {
         if (companies.length === 0) {
             return NextResponse.json({
                 batch_run_id: batchRunId,
+                companies_count: 0,
+                companies: [],
                 leads_count: 0,
                 leads: [],
+                debug_logs: debugLogs,
+            });
+        }
+
+        if (companies_only) {
+            return NextResponse.json({
+                batch_run_id: batchRunId,
+                companies_count: companies.length,
+                companies,
                 debug_logs: debugLogs,
             });
         }
@@ -198,7 +230,7 @@ export async function POST(req: Request) {
 async function fetchCompanies(
     apiKey: string,
     filters: {
-        industry_keywords?: string[];
+        company_keyword_tags?: string[];
         company_location?: string[];
         employee_ranges?: string[];
         max_results: number;
@@ -214,25 +246,34 @@ async function fetchCompanies(
 
     while (companies.length < maxCompanies) {
         try {
-            const payload = {
-                q_keywords: filters.industry_keywords?.join(' '),
-                page: page,
-                per_page: perPage,
-                organization_locations: filters.company_location,
-                organization_num_employees_ranges: filters.employee_ranges,
-            };
+            const params = new URLSearchParams();
+            params.set('page', String(page));
+            params.set('per_page', String(perPage));
 
-            log(`Fetching Companies (Page ${page}) Payload:`, payload);
+            for (const location of filters.company_location ?? []) {
+                params.append('organization_locations[]', location);
+            }
 
-            // Use X-Api-Key header
-            const response = await fetch('https://api.apollo.io/v1/mixed_companies/search', {
+            for (const keywordTag of filters.company_keyword_tags ?? []) {
+                params.append('q_organization_keyword_tags[]', keywordTag);
+            }
+
+            for (const employeeRange of filters.employee_ranges ?? []) {
+                params.append('organization_num_employees_ranges[]', employeeRange);
+            }
+
+            const url = `https://api.apollo.io/api/v1/mixed_companies/search?${params.toString()}`;
+            log(`Fetching Companies (Page ${page}) Params: ${params.toString()}`);
+
+            const response = await fetch(url, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Cache-Control': 'no-cache',
-                    'X-Api-Key': apiKey,
+                    'accept': 'application/json',
+                    'x-api-key': apiKey,
                 },
-                body: JSON.stringify(payload),
+                body: '{}',
             });
 
             if (!response.ok) {
@@ -278,6 +319,7 @@ async function fetchPeople(
     let people: ApolloPerson[] = [];
     let page = 1;
     const perPage = 100;
+    const maxPages = 500;
 
     while (people.length < filters.max_results) {
         try {
@@ -333,7 +375,10 @@ async function fetchPeople(
             page++;
 
             if (people.length >= filters.max_results) break;
-            if (page > 10) break; // Limit
+            if (page > maxPages) {
+                log(`Reached Apollo page limit (${maxPages}) for people search.`);
+                break;
+            }
         } catch (error) {
             log("Error fetching people:", error);
             break;

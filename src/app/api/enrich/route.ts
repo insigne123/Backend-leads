@@ -238,7 +238,7 @@ export async function POST(req: Request) {
 }
 
 async function enrichWithApolloId(apiKey: string, apolloId: string, recordId: string, tableName: string, retries = 2): Promise<any> {
-    const url = 'https://api.apollo.io/v1/people/enrich';
+    const url = 'https://api.apollo.io/api/v1/people/match';
 
     // Construct Webhook URL
     const webhookUrl = `${BASE_URL}/api/apollo-webhook?record_id=${recordId}&table_name=${tableName}`;
@@ -258,7 +258,8 @@ async function enrichWithApolloId(apiKey: string, apolloId: string, recordId: st
             headers: {
                 'Content-Type': 'application/json',
                 'Cache-Control': 'no-cache',
-                'X-Api-Key': apiKey,
+                'accept': 'application/json',
+                'x-api-key': apiKey,
             },
             body: JSON.stringify(payload),
         });
@@ -284,7 +285,7 @@ async function enrichWithApolloId(apiKey: string, apolloId: string, recordId: st
 }
 
 async function enrichWithApollo(apiKey: string, lead: any, recordId: string, tableName: string, retries = 2): Promise<any> {
-    const url = 'https://api.apollo.io/v1/people/match';
+    const url = 'https://api.apollo.io/api/v1/people/match';
 
     // Construct Webhook URL
     const webhookUrl = `${BASE_URL}/api/apollo-webhook?record_id=${recordId}&table_name=${tableName}`;
@@ -314,7 +315,8 @@ async function enrichWithApollo(apiKey: string, lead: any, recordId: string, tab
             headers: {
                 'Content-Type': 'application/json',
                 'Cache-Control': 'no-cache',
-                'X-Api-Key': apiKey,
+                'accept': 'application/json',
+                'x-api-key': apiKey,
             },
             body: JSON.stringify(payload),
         });

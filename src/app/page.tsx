@@ -282,7 +282,17 @@ export default function Home() {
                 <TableBody>
                   {leads.map((lead) => (
                     <TableRow key={lead.id}>
-                      <TableCell className="font-mono text-xs text-muted-foreground" title="Click to ID" >
+                      <TableCell
+                        className="font-mono text-xs text-muted-foreground cursor-pointer hover:bg-muted/50 transition-colors"
+                        title="Click to copy full ID"
+                        onClick={(e) => {
+                          const target = e.currentTarget;
+                          navigator.clipboard.writeText(lead.id);
+                          const originalText = target.innerText;
+                          target.innerText = "Copied!";
+                          setTimeout(() => { target.innerText = lead.id.substring(0, 8) + "..."; }, 1000);
+                        }}
+                      >
                         {lead.id.substring(0, 8)}...
                       </TableCell>
                       <TableCell className="font-medium">{lead.first_name} {lead.last_name}</TableCell>
