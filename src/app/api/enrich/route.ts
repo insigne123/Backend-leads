@@ -6,6 +6,22 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 const BASE_URL = 'https://studio--studio-6624658482-61b7b.us-central1.hosted.app';
 
+function extractPersonFromApolloResponse(response: any): any | null {
+    if (response?.person && typeof response.person === 'object') return response.person;
+
+    if (Array.isArray(response?.matches)) {
+        const match = response.matches.find((entry: any) => entry && typeof entry === 'object');
+        if (match) return match;
+    }
+
+    if (Array.isArray(response?.people)) {
+        const person = response.people.find((entry: any) => entry && typeof entry === 'object');
+        if (person) return person;
+    }
+
+    return null;
+}
+
 export async function POST(req: Request) {
     console.log('--- Starting Enrichment Request ---');
 
@@ -37,6 +53,7 @@ export async function POST(req: Request) {
         const { lead, config } = body;
         const record_id = (body.record_id as string)?.trim();
         const table_name = (body.table_name as string)?.trim() || 'enriched_leads';
+        const apolloPersonId = (lead?.apollo_id || lead?.id || '').toString().trim();
 
         if (!record_id || !lead || !table_name) {
             return NextResponse.json({ error: 'Missing required fields: record_id, lead, or table_name' }, { status: 400 });
@@ -51,23 +68,25 @@ export async function POST(req: Request) {
 
         // 2. Call Apollo API (Match or Enrich by ID)
         let matchResponse;
-        if (lead.apollo_id) {
-            console.log(`Enriching via Apollo ID: ${lead.apollo_id}`);
-            matchResponse = await enrichWithApolloId(apiKey, lead.apollo_id, record_id, table_name);
+        if (apolloPersonId) {
+            console.log(`Enriching via Apollo ID: ${apolloPersonId}`);
+            matchResponse = await enrichWithApolloId(apiKey, apolloPersonId, record_id, table_name);
         } else {
             console.log('Enrichment: Enriching via Search/Match');
             matchResponse = await enrichWithApollo(apiKey, lead, record_id, table_name);
         }
+
+        const matchedPerson = extractPersonFromApolloResponse(matchResponse);
 
         // --- DEBUG LOGGING START ---
         console.log('--- RAW APOLLO RESPONSE ---');
         console.log(JSON.stringify(matchResponse, null, 2));
         console.log('---------------------------');
 
-        if (matchResponse?.person?.phone_numbers) {
-            console.log('Phone numbers found explicitly:', matchResponse.person.phone_numbers);
+        if (matchedPerson?.phone_numbers) {
+            console.log('Phone numbers found explicitly:', matchedPerson.phone_numbers);
         } else {
-            console.log('No phone_numbers array in matchResponse.person');
+            console.log('No phone_numbers array in matched Apollo person payload');
         }
         // --- DEBUG LOGGING END ---
 
@@ -78,8 +97,8 @@ export async function POST(req: Request) {
             updated_at: new Date().toISOString(),
         };
 
-        if (matchResponse && matchResponse.person) {
-            const p = matchResponse.person;
+        if (matchedPerson) {
+            const p = matchedPerson;
             updates.enrichment_status = 'completed'; // If we got data immediately, mark completed
 
             // Basic Fields - Fill if available
@@ -137,6 +156,8 @@ export async function POST(req: Request) {
         // If we got a specific error from our wrapper
         if (matchResponse?.error) {
             updates.enrichment_status = 'failed';
+        } else if (!matchedPerson) {
+            updates.enrichment_status = 'failed';
         }
 
         // 4. Update Supabase
@@ -172,7 +193,7 @@ export async function POST(req: Request) {
             .eq('id', record_id)
             .select();
 
-        let finalStatus = 'completed';
+        let finalStatus = updates.enrichment_status;
         let errorMessage = null;
 
         if (updateError) {
@@ -191,8 +212,8 @@ export async function POST(req: Request) {
             table_name,
             status: finalStatus,
             details: {
-                match_method: lead.apollo_id ? 'apollo_id' : 'people_match',
-                match_found: !!(matchResponse && matchResponse.person && !matchResponse.error),
+                match_method: apolloPersonId ? 'apollo_id' : 'people_match',
+                match_found: !!(matchedPerson && !matchResponse.error),
                 is_async: true,
                 key_suffix: keySuffix, // DEBUG KEY SIGNATURE
                 email_found: updates.email || null,
@@ -203,7 +224,7 @@ export async function POST(req: Request) {
                 post_update_db_state: updatedData,
                 error: errorMessage || matchResponse?.error,
                 supabase_data: updates,
-                apollo_data: matchResponse?.person || null
+                apollo_data: matchedPerson || null
             }
         });
 
@@ -212,9 +233,9 @@ export async function POST(req: Request) {
         }
 
         return NextResponse.json({
-            success: true,
+            success: updates.enrichment_status !== 'failed',
             enrichment_status: updates.enrichment_status,
-            data_found: !!(matchResponse && matchResponse.person),
+            data_found: !!matchedPerson,
             debug_apollo_response: matchResponse, // Expose for debugging
             extracted_data: updates // Expose what we are saving to Supabase
         });
@@ -238,18 +259,17 @@ export async function POST(req: Request) {
 }
 
 async function enrichWithApolloId(apiKey: string, apolloId: string, recordId: string, tableName: string, retries = 2): Promise<any> {
-    const url = 'https://api.apollo.io/api/v1/people/match';
-
     // Construct Webhook URL
     const webhookUrl = `${BASE_URL}/api/apollo-webhook?record_id=${recordId}&table_name=${tableName}`;
 
-    // Per user instructions: reveal_personal_emails: false, reveal_phone_number: true
+    const params = new URLSearchParams();
+    params.set('reveal_personal_emails', 'false');
+    params.set('reveal_phone_number', 'true');
+    params.set('webhook_url', webhookUrl);
+
+    const url = `https://api.apollo.io/api/v1/people/bulk_match?${params.toString()}`;
     const payload = {
-        api_key: apiKey,
-        id: apolloId,
-        reveal_personal_emails: false,
-        reveal_phone_number: true,
-        webhook_url: webhookUrl
+        details: [{ id: apolloId }],
     };
 
     try {
@@ -285,29 +305,27 @@ async function enrichWithApolloId(apiKey: string, apolloId: string, recordId: st
 }
 
 async function enrichWithApollo(apiKey: string, lead: any, recordId: string, tableName: string, retries = 2): Promise<any> {
-    const url = 'https://api.apollo.io/api/v1/people/match';
-
     // Construct Webhook URL
     const webhookUrl = `${BASE_URL}/api/apollo-webhook?record_id=${recordId}&table_name=${tableName}`;
 
-    const payload: any = {
-        api_key: apiKey,
-        reveal_personal_emails: true,
-        reveal_phone_number: true,
-        webhook_url: webhookUrl
-    };
+    const params = new URLSearchParams();
+    params.set('reveal_personal_emails', 'true');
+    params.set('reveal_phone_number', 'true');
+    params.set('webhook_url', webhookUrl);
 
-    if (lead.first_name) payload.first_name = lead.first_name;
-    if (lead.last_name) payload.last_name = lead.last_name;
-    if (lead.email) payload.email = lead.email;
-    if (lead.organization_name) payload.organization_name = lead.organization_name;
+    if (lead.first_name) params.set('first_name', lead.first_name);
+    if (lead.last_name) params.set('last_name', lead.last_name);
+    if (lead.email) params.set('email', lead.email);
+    if (lead.organization_name) params.set('organization_name', lead.organization_name);
 
     // Cleanup domain input
     if (lead.organization_domain) {
-        payload.domain = lead.organization_domain.replace(/^https?:\/\//, '').replace(/\/$/, '');
+        params.set('domain', lead.organization_domain.replace(/^https?:\/\//, '').replace(/\/$/, ''));
     }
 
-    if (lead.linkedin_url) payload.linkedin_url = lead.linkedin_url;
+    if (lead.linkedin_url) params.set('linkedin_url', lead.linkedin_url);
+
+    const url = `https://api.apollo.io/api/v1/people/match?${params.toString()}`;
 
     try {
         const response = await fetch(url, {
@@ -318,7 +336,7 @@ async function enrichWithApollo(apiKey: string, lead: any, recordId: string, tab
                 'accept': 'application/json',
                 'x-api-key': apiKey,
             },
-            body: JSON.stringify(payload),
+            body: '{}',
         });
 
         if (response.status === 429 && retries > 0) {
