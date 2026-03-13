@@ -196,24 +196,48 @@ function resolveLinkedInRevealPreferences(body: LeadSearchRequest): LinkedInReve
     };
 }
 
-function extractPersonFromApolloResponse(response: any): ApolloPerson | null {
-    if (response?.person && typeof response.person === 'object') return response.person;
+function extractPeopleCandidatesFromApolloResponse(response: any): ApolloPerson[] {
+    const candidates: ApolloPerson[] = [];
+
+    const pushCandidate = (entry: any) => {
+        if (!entry || typeof entry !== 'object') return;
+        if (!entry.id) return;
+        candidates.push(entry as ApolloPerson);
+    };
+
+    if (response?.person && typeof response.person === 'object') {
+        pushCandidate(response.person);
+    }
 
     if (Array.isArray(response?.matches)) {
-        const match = response.matches.find((entry: any) => entry && typeof entry === 'object');
-        if (match) return match;
+        for (const entry of response.matches) {
+            pushCandidate(entry);
+        }
     }
 
     if (Array.isArray(response?.people)) {
-        const person = response.people.find((entry: any) => entry && typeof entry === 'object');
-        if (person) return person;
+        for (const entry of response.people) {
+            pushCandidate(entry);
+        }
     }
 
     if (response && typeof response === 'object' && response.id) {
-        return response;
+        pushCandidate(response);
     }
 
-    return null;
+    const deduped = new Map<string, ApolloPerson>();
+    for (const candidate of candidates) {
+        const id = candidate.id?.toString?.() || '';
+        if (!id) continue;
+        if (!deduped.has(id)) deduped.set(id, candidate);
+    }
+
+    return Array.from(deduped.values());
+}
+
+function extractPersonFromApolloResponse(response: any): ApolloPerson | null {
+    const candidates = extractPeopleCandidatesFromApolloResponse(response);
+    return candidates[0] || null;
 }
 
 function normalizeEmail(value: any): string | null {
@@ -480,6 +504,17 @@ export async function POST(req: Request) {
             include_similar_titles: includeSimilarTitles,
         });
 
+        if (
+            (requestedMode === 'linkedin_profile' || requestedMode === 'linkedin' || requestedMode === 'profile') &&
+            resolvedSearchMode !== 'linkedin_profile'
+        ) {
+            log('LinkedIn mode mismatch detected. Forcing linkedin_profile execution.', {
+                requested_mode: requestedMode,
+                resolved_search_mode: resolvedSearchMode,
+            });
+            resolvedSearchMode = 'linkedin_profile';
+        }
+
         if (resolvedSearchMode === 'company_name') {
             let selectedOrganization: OrganizationCandidate | null = null;
             let organizationCandidates: OrganizationCandidate[] = [];
@@ -597,9 +632,20 @@ export async function POST(req: Request) {
         }
 
         if (resolvedSearchMode === 'linkedin_profile') {
+            if (!normalizedLinkedInUrl) {
+                return NextResponse.json(
+                    { error: 'Missing linkedin_url for linkedin_profile mode' },
+                    { status: 400 }
+                );
+            }
+
+            log('Executing single-profile LinkedIn search path', {
+                linkedin_url: normalizedLinkedInUrl,
+            });
+
             const apolloResponse = await fetchPersonByLinkedInUrl(
                 apiKey,
-                normalizedLinkedInUrl as string,
+                normalizedLinkedInUrl,
                 revealPreferences,
                 log
             );
@@ -609,6 +655,29 @@ export async function POST(req: Request) {
                     {
                         error: apolloResponse.error,
                         details: apolloResponse.details || null,
+                        requested_reveal: {
+                            email: revealPreferences.revealEmail,
+                            phone: revealPreferences.revealPhone,
+                        },
+                        debug_logs: debugLogs,
+                    },
+                    { status: 502 }
+                );
+            }
+
+            const personCandidates = extractPeopleCandidatesFromApolloResponse(apolloResponse);
+
+            if (personCandidates.length > 1) {
+                log('LinkedIn profile search returned multiple people. Rejecting response.', {
+                    candidate_count: personCandidates.length,
+                    candidate_ids: personCandidates.map((candidate) => candidate.id).slice(0, 10),
+                });
+
+                return NextResponse.json(
+                    {
+                        error: 'PROFILE_SEARCH_BACKEND_MISMATCH',
+                        details: 'LinkedIn profile search returned multiple people.',
+                        search_mode: resolvedSearchMode,
                         requested_reveal: {
                             email: revealPreferences.revealEmail,
                             phone: revealPreferences.revealPhone,
