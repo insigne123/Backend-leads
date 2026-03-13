@@ -16,23 +16,77 @@ interface BatchRun {
   count: number;
 }
 
+type SearchMode = 'batch' | 'linkedin_profile' | 'company_name';
+
+interface OrganizationCandidate {
+  id: string;
+  name: string;
+  primary_domain?: string | null;
+  website_url?: string | null;
+  match_score?: number;
+}
+
+function parseCommaList(value: string): string[] | undefined {
+  const entries = value
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+
+  return entries.length > 0 ? entries : undefined;
+}
+
+function resolvePrimaryPhone(lead: any): string {
+  if (typeof lead?.primary_phone === 'string' && lead.primary_phone.trim()) {
+    return lead.primary_phone.trim();
+  }
+
+  if (!Array.isArray(lead?.phone_numbers) || lead.phone_numbers.length === 0) {
+    return 'N/A';
+  }
+
+  const mobile = lead.phone_numbers.find((phone: any) => {
+    const type = (phone?.type || phone?.type_cd || '').toString().toLowerCase();
+    return type.includes('mobile');
+  });
+
+  const selected = mobile || lead.phone_numbers[0];
+  const phone = selected?.sanitized_number || selected?.number || selected?.raw_number || null;
+
+  if (typeof phone !== 'string') return 'N/A';
+  const trimmed = phone.trim();
+  return trimmed || 'N/A';
+}
+
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [runs, setRuns] = useState<BatchRun[]>([]);
   const [status, setStatus] = useState<string>('');
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [leads, setLeads] = useState<any[]>([]);
+  const [organizationCandidates, setOrganizationCandidates] = useState<OrganizationCandidate[]>([]);
+  const [selectedOrganizationId, setSelectedOrganizationId] = useState('');
 
   // Form State
   const [userId, setUserId] = useState('test-user-1');
+  const [searchMode, setSearchMode] = useState<SearchMode>('batch');
+  const [linkedinUrl, setLinkedinUrl] = useState('');
+  const [companyName, setCompanyName] = useState('');
   const [industryKeywords, setIndustryKeywords] = useState('');
   const [locations, setLocations] = useState('');
   const [titles, setTitles] = useState('');
+  const [seniorities, setSeniorities] = useState('');
   const [maxResults, setMaxResults] = useState(100);
 
   useEffect(() => {
     fetchRuns();
   }, []);
+
+  useEffect(() => {
+    if (searchMode !== 'company_name') {
+      setOrganizationCandidates([]);
+      setSelectedOrganizationId('');
+    }
+  }, [searchMode]);
 
   const fetchRuns = async () => {
     const { data, error } = await supabase
@@ -64,18 +118,46 @@ export default function Home() {
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    setStatus('Starting search...');
+    setStatus(
+      searchMode === 'linkedin_profile'
+        ? 'Searching profile...'
+        : searchMode === 'company_name'
+          ? (selectedOrganizationId ? 'Searching employees...' : 'Searching company...')
+          : 'Starting search...'
+    );
     setDebugLogs([]);
     setLeads([]);
 
     try {
-      const payload = {
+      const payload: Record<string, any> = {
         user_id: userId,
-        industry_keywords: industryKeywords ? industryKeywords.split(',').map(s => s.trim()) : undefined,
-        company_location: locations ? locations.split(',').map(s => s.trim()) : undefined,
-        titles: titles ? titles.split(',').map(s => s.trim()) : undefined,
-        max_results: Number(maxResults),
+        search_mode: searchMode,
       };
+
+      if (searchMode === 'linkedin_profile') {
+        payload.linkedin_url = linkedinUrl.trim();
+        payload.reveal_email = true;
+        payload.reveal_phone = true;
+        payload.max_results = 1;
+      } else if (searchMode === 'company_name') {
+        payload.company_name = companyName.trim();
+        payload.titles = parseCommaList(titles);
+        payload.seniorities = parseCommaList(seniorities);
+        payload.include_similar_titles = false;
+        payload.max_results = Number(maxResults);
+
+        if (selectedOrganizationId) {
+          payload.selected_organization_id = selectedOrganizationId;
+          const selectedOrg = organizationCandidates.find((candidate) => candidate.id === selectedOrganizationId);
+          if (selectedOrg?.name) payload.selected_organization_name = selectedOrg.name;
+          if (selectedOrg?.primary_domain) payload.selected_organization_domain = selectedOrg.primary_domain;
+        }
+      } else {
+        payload.industry_keywords = parseCommaList(industryKeywords);
+        payload.company_location = parseCommaList(locations);
+        payload.titles = parseCommaList(titles);
+        payload.max_results = Number(maxResults);
+      }
 
       const res = await fetch('/api/lead-search', {
         method: 'POST',
@@ -88,10 +170,48 @@ export default function Home() {
       const data = await res.json();
 
       if (!res.ok) {
+        if (data.debug_logs) {
+          setDebugLogs(data.debug_logs);
+        }
         throw new Error(data.error || 'Search failed');
       }
 
-      setStatus(`Success! Found ${data.leads_count} leads. Batch ID: ${data.batch_run_id}`);
+      if (searchMode === 'company_name' && data.requires_organization_selection) {
+        const candidates = Array.isArray(data.organization_candidates)
+          ? data.organization_candidates
+          : [];
+
+        setOrganizationCandidates(candidates);
+        setSelectedOrganizationId('');
+        setStatus(
+          `Found ${candidates.length} organizations for "${data.company_name || companyName.trim()}". Select one and search again.`
+        );
+
+        if (data.debug_logs) {
+          setDebugLogs(data.debug_logs);
+        }
+
+        return;
+      }
+
+      const isLinkedInProfileSearch = data.search_mode === 'linkedin_profile' || searchMode === 'linkedin_profile';
+      const isCompanySearch = data.search_mode === 'company_name' || searchMode === 'company_name';
+
+      if (isCompanySearch) {
+        const selectedOrgName = data.selected_organization?.name || companyName.trim();
+        setStatus(`Success! Found ${data.leads_count} leads in ${selectedOrgName}. Batch ID: ${data.batch_run_id}`);
+        setOrganizationCandidates([]);
+        setSelectedOrganizationId('');
+      } else if (isLinkedInProfileSearch) {
+        setStatus(
+          data.leads_count > 0
+            ? `Success! Profile found. Batch ID: ${data.batch_run_id}`
+            : `No profile match found for that LinkedIn URL. Batch ID: ${data.batch_run_id}`
+        );
+      } else {
+        setStatus(`Success! Found ${data.leads_count} leads. Batch ID: ${data.batch_run_id}`);
+      }
+
       if (data.debug_logs) {
         setDebugLogs(data.debug_logs);
       }
@@ -145,47 +265,155 @@ export default function Home() {
               </div>
 
               <div className="space-y-2">
-                <Label htmlFor="industry">Industry Keywords</Label>
-                <Input
-                  id="industry"
-                  placeholder="e.g. software, saas, marketing"
-                  value={industryKeywords}
-                  onChange={(e) => setIndustryKeywords(e.target.value)}
-                />
-                <p className="text-xs text-muted-foreground">Comma separated values</p>
+                <Label htmlFor="searchMode">Search Mode</Label>
+                <select
+                  id="searchMode"
+                  value={searchMode}
+                  onChange={(e) => setSearchMode(e.target.value as SearchMode)}
+                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                >
+                  <option value="batch">Batch lead search</option>
+                  <option value="linkedin_profile">Single profile by LinkedIn URL</option>
+                  <option value="company_name">Employees by company name</option>
+                </select>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="location">Locations</Label>
-                <Input
-                  id="location"
-                  placeholder="e.g. United States, California"
-                  value={locations}
-                  onChange={(e) => setLocations(e.target.value)}
-                />
-              </div>
+              {searchMode === 'linkedin_profile' ? (
+                <div className="space-y-2">
+                  <Label htmlFor="linkedinUrl">LinkedIn Profile URL</Label>
+                  <Input
+                    id="linkedinUrl"
+                    placeholder="https://www.linkedin.com/in/username"
+                    value={linkedinUrl}
+                    onChange={(e) => setLinkedinUrl(e.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Finds a single person via Apollo People Enrichment.
+                  </p>
+                </div>
+              ) : searchMode === 'company_name' ? (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="companyName">Company Name</Label>
+                    <Input
+                      id="companyName"
+                      placeholder="e.g. Microsoft"
+                      value={companyName}
+                      onChange={(e) => {
+                        setCompanyName(e.target.value);
+                        if (organizationCandidates.length > 0) {
+                          setOrganizationCandidates([]);
+                          setSelectedOrganizationId('');
+                        }
+                      }}
+                      required
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      We search organizations first. If there are multiple matches, you select the right one.
+                    </p>
+                  </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="titles">Job Titles</Label>
-                <Input
-                  id="titles"
-                  placeholder="e.g. CEO, Founder, Marketing Director"
-                  value={titles}
-                  onChange={(e) => setTitles(e.target.value)}
-                />
-              </div>
+                  {organizationCandidates.length > 0 && (
+                    <div className="space-y-2">
+                      <Label htmlFor="organizationCandidate">Select Organization</Label>
+                      <select
+                        id="organizationCandidate"
+                        value={selectedOrganizationId}
+                        onChange={(e) => setSelectedOrganizationId(e.target.value)}
+                        className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background"
+                        required
+                      >
+                        <option value="">Choose organization</option>
+                        {organizationCandidates.map((candidate) => (
+                          <option key={candidate.id} value={candidate.id}>
+                            {candidate.name}
+                            {candidate.primary_domain ? ` (${candidate.primary_domain})` : ''}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
 
-              <div className="space-y-2">
-                <Label htmlFor="maxResults">Max Results</Label>
-                <Input
-                  id="maxResults"
-                  type="number"
-                  value={maxResults}
-                  onChange={(e) => setMaxResults(Number(e.target.value))}
-                  min={1}
-                  max={1000}
-                />
-              </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="seniorities">Management Levels</Label>
+                    <Input
+                      id="seniorities"
+                      placeholder="e.g. c_suite, vp, director"
+                      value={seniorities}
+                      onChange={(e) => setSeniorities(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">Comma separated Apollo seniorities</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="titles">Job Titles (Optional)</Label>
+                    <Input
+                      id="titles"
+                      placeholder="e.g. VP Marketing, Director of Sales"
+                      value={titles}
+                      onChange={(e) => setTitles(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="maxResults">Max Results</Label>
+                    <Input
+                      id="maxResults"
+                      type="number"
+                      value={maxResults}
+                      onChange={(e) => setMaxResults(Number(e.target.value))}
+                      min={1}
+                      max={1000}
+                    />
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-2">
+                    <Label htmlFor="industry">Industry Keywords</Label>
+                    <Input
+                      id="industry"
+                      placeholder="e.g. software, saas, marketing"
+                      value={industryKeywords}
+                      onChange={(e) => setIndustryKeywords(e.target.value)}
+                    />
+                    <p className="text-xs text-muted-foreground">Comma separated values</p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="location">Locations</Label>
+                    <Input
+                      id="location"
+                      placeholder="e.g. United States, California"
+                      value={locations}
+                      onChange={(e) => setLocations(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="titles">Job Titles</Label>
+                    <Input
+                      id="titles"
+                      placeholder="e.g. CEO, Founder, Marketing Director"
+                      value={titles}
+                      onChange={(e) => setTitles(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="maxResults">Max Results</Label>
+                    <Input
+                      id="maxResults"
+                      type="number"
+                      value={maxResults}
+                      onChange={(e) => setMaxResults(Number(e.target.value))}
+                      min={1}
+                      max={1000}
+                    />
+                  </div>
+                </>
+              )}
 
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? (
@@ -194,7 +422,11 @@ export default function Home() {
                     Searching...
                   </>
                 ) : (
-                  'Start Search'
+                  searchMode === 'linkedin_profile'
+                    ? 'Find Profile'
+                    : searchMode === 'company_name'
+                      ? (organizationCandidates.length > 0 ? 'Search Selected Company' : 'Find Company')
+                      : 'Start Search'
                 )}
               </Button>
             </form>
@@ -276,6 +508,7 @@ export default function Home() {
                     <TableHead>Title</TableHead>
                     <TableHead>Company</TableHead>
                     <TableHead>Email</TableHead>
+                    <TableHead>Phone</TableHead>
                     <TableHead>LinkedIn</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -299,6 +532,7 @@ export default function Home() {
                       <TableCell>{lead.title}</TableCell>
                       <TableCell>{lead.organization?.name || lead.organization_name}</TableCell>
                       <TableCell>{lead.email || 'N/A'}</TableCell>
+                      <TableCell>{resolvePrimaryPhone(lead)}</TableCell>
                       <TableCell>
                         {lead.linkedin_url ? (
                           <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">
