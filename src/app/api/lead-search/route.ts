@@ -4,6 +4,8 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const DEFAULT_APOLLO_WEBHOOK_BASE_URL = 'https://studio--studio-6624658482-61b7b.us-central1.hosted.app';
+const LINKEDIN_PROFILE_TABLE_NAME = 'people_search_leads';
 
 type SearchMode = 'batch' | 'linkedin_profile' | 'company_name';
 
@@ -71,6 +73,24 @@ interface ApolloPerson {
 type LinkedInRevealPreferences = {
     revealEmail: boolean;
     revealPhone: boolean;
+};
+
+type LinkedInLookupResult = {
+    apolloResponse: any | null;
+    error: string | null;
+    details: string | null;
+    appliedReveal: LinkedInRevealPreferences;
+    providerWarnings: string[];
+};
+
+type PhoneEnrichmentQueueResult = {
+    requested: boolean;
+    queued: boolean;
+    status: 'not_requested' | 'queued' | 'skipped' | 'failed';
+    message: string | null;
+    webhook_url: string | null;
+    provider_status: number | null;
+    provider_details: string | null;
 };
 
 type OrganizationCandidate = {
@@ -385,6 +405,198 @@ function pickBestOrganizationCandidate(
     return { selected: null, ambiguous: true };
 }
 
+function resolveLinkedInProfileWebhookUrl(
+    recordId: string,
+    revealPreferences: Pick<LinkedInRevealPreferences, 'revealEmail'>,
+    requestOrigin?: string | null
+): string | null {
+    const candidates = [
+        process.env.APOLLO_LINKEDIN_PROFILE_WEBHOOK_URL,
+        process.env.LINKEDIN_PROFILE_WEBHOOK_URL,
+        process.env.APOLLO_PROFILE_WEBHOOK_URL,
+        process.env.APOLLO_WEBHOOK_URL,
+        process.env.APOLLO_WEBHOOK_BASE_URL,
+        process.env.LEAD_SEARCH_WEBHOOK_BASE_URL,
+        process.env.APP_URL,
+        process.env.NEXT_PUBLIC_APP_URL,
+        requestOrigin,
+        DEFAULT_APOLLO_WEBHOOK_BASE_URL,
+    ];
+
+    for (const candidate of candidates) {
+        if (typeof candidate !== 'string') continue;
+
+        const trimmed = candidate.trim();
+        if (!trimmed) continue;
+
+        try {
+            let parsed = new URL(trimmed);
+
+            if (parsed.protocol !== 'https:') {
+                continue;
+            }
+
+            if (!parsed.pathname.toLowerCase().endsWith('/api/apollo-webhook')) {
+                parsed = new URL('/api/apollo-webhook', parsed);
+            }
+
+            parsed.searchParams.set('record_id', recordId);
+            parsed.searchParams.set('table_name', LINKEDIN_PROFILE_TABLE_NAME);
+            parsed.searchParams.set('reveal_email', String(revealPreferences.revealEmail));
+            parsed.searchParams.set('reveal_phone', 'true');
+
+            return parsed.toString();
+        } catch {
+            continue;
+        }
+    }
+
+    return null;
+}
+
+async function queueLinkedInPhoneEnrichment(
+    apiKey: string,
+    apolloPersonId: string,
+    revealPreferences: LinkedInRevealPreferences,
+    requestOrigin: string | null,
+    log: (msg: string, data?: any) => void,
+    retries = 2
+): Promise<PhoneEnrichmentQueueResult> {
+    if (!revealPreferences.revealPhone) {
+        return {
+            requested: false,
+            queued: false,
+            status: 'not_requested',
+            message: null,
+            webhook_url: null,
+            provider_status: null,
+            provider_details: null,
+        };
+    }
+
+    const webhookUrl = resolveLinkedInProfileWebhookUrl(apolloPersonId, {
+        revealEmail: revealPreferences.revealEmail,
+    }, requestOrigin);
+
+    if (!webhookUrl) {
+        return {
+            requested: true,
+            queued: false,
+            status: 'skipped',
+            message: 'Phone enrichment was not queued because no webhook URL is configured.',
+            webhook_url: null,
+            provider_status: null,
+            provider_details: null,
+        };
+    }
+
+    const requestQueue = async (
+        retryCount: number
+    ): Promise<PhoneEnrichmentQueueResult> => {
+        const params = new URLSearchParams();
+        params.set('id', apolloPersonId);
+        params.set('reveal_personal_emails', String(revealPreferences.revealEmail));
+        params.set('reveal_phone_number', 'true');
+        params.set('webhook_url', webhookUrl);
+
+        const url = `https://api.apollo.io/api/v1/people/match?${params.toString()}`;
+
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache',
+                'accept': 'application/json',
+                'x-api-key': apiKey,
+            },
+            body: '{}',
+        });
+
+        if (response.status === 429 && retryCount > 0) {
+            log('Apollo rate limit reached while queueing phone enrichment. Retrying...');
+            await delay(1200 * (3 - retryCount));
+            return requestQueue(retryCount - 1);
+        }
+
+        if (!response.ok) {
+            const details = await response.text();
+            return {
+                requested: true,
+                queued: false,
+                status: 'failed',
+                message: `Phone enrichment queue failed (${response.status}).`,
+                webhook_url: webhookUrl,
+                provider_status: response.status,
+                provider_details: details,
+            };
+        }
+
+        return {
+            requested: true,
+            queued: true,
+            status: 'queued',
+            message: 'Phone enrichment queued via webhook.',
+            webhook_url: webhookUrl,
+            provider_status: response.status,
+            provider_details: null,
+        };
+    };
+
+    try {
+        const queueResult = await requestQueue(retries);
+
+        if (queueResult.queued) {
+            log('Queued async phone enrichment for LinkedIn profile search.', {
+                apollo_id: apolloPersonId,
+                webhook_url: queueResult.webhook_url,
+            });
+        } else if (queueResult.status === 'skipped') {
+            log('Skipped async phone enrichment for LinkedIn profile search.', {
+                apollo_id: apolloPersonId,
+                reason: queueResult.message,
+            });
+        } else {
+            log('Failed to queue async phone enrichment for LinkedIn profile search.', {
+                apollo_id: apolloPersonId,
+                status: queueResult.provider_status,
+                details: queueResult.provider_details,
+            });
+        }
+
+        return queueResult;
+    } catch (error: any) {
+        return {
+            requested: true,
+            queued: false,
+            status: 'failed',
+            message: 'Phone enrichment queue failed due to internal error.',
+            webhook_url: webhookUrl,
+            provider_status: null,
+            provider_details: error?.message || String(error),
+        };
+    }
+}
+
+async function markLeadAsPendingPhoneEnrichment(recordId: string, log: (msg: string, data?: any) => void) {
+    const { error } = await supabase
+        .from(LINKEDIN_PROFILE_TABLE_NAME)
+        .update({
+            enrichment_status: 'pending',
+            updated_at: new Date().toISOString(),
+        })
+        .eq('id', recordId);
+
+    if (error) {
+        log('Warning: Failed to mark lead as pending phone enrichment.', {
+            record_id: recordId,
+            error: error.message,
+        });
+        return;
+    }
+
+    log('Marked lead as pending phone enrichment.', { record_id: recordId });
+}
+
 export async function POST(req: Request) {
     const debugLogs: string[] = [];
     const log = (msg: string, data?: any) => {
@@ -491,6 +703,14 @@ export async function POST(req: Request) {
         }
 
         const batchRunId = uuidv4();
+        const requestOrigin = (() => {
+            try {
+                return new URL(req.url).origin;
+            } catch {
+                return null;
+            }
+        })();
+
         log(`Starting batch run: ${batchRunId} for user: ${user_id}`);
         log('Request Body:', body);
         log('Resolved Search Mode:', {
@@ -639,6 +859,18 @@ export async function POST(req: Request) {
                 );
             }
 
+            const fallbackPhoneEnrichment: PhoneEnrichmentQueueResult = {
+                requested: revealPreferences.revealPhone,
+                queued: false,
+                status: revealPreferences.revealPhone ? 'skipped' : 'not_requested',
+                message: revealPreferences.revealPhone
+                    ? 'Phone enrichment was not queued.'
+                    : null,
+                webhook_url: null,
+                provider_status: null,
+                provider_details: null,
+            };
+
             log('Executing single-profile LinkedIn search path', {
                 linkedin_url: normalizedLinkedInUrl,
             });
@@ -650,6 +882,14 @@ export async function POST(req: Request) {
                 log
             );
 
+            const appliedReveal = apolloResponse.appliedReveal || {
+                revealEmail: revealPreferences.revealEmail,
+                revealPhone: false,
+            };
+            const providerWarnings = Array.isArray(apolloResponse.providerWarnings)
+                ? apolloResponse.providerWarnings
+                : [];
+
             if (apolloResponse?.error) {
                 return NextResponse.json(
                     {
@@ -659,13 +899,26 @@ export async function POST(req: Request) {
                             email: revealPreferences.revealEmail,
                             phone: revealPreferences.revealPhone,
                         },
+                        applied_reveal: {
+                            email: appliedReveal.revealEmail,
+                            phone: appliedReveal.revealPhone,
+                        },
+                        provider_warnings: providerWarnings,
+                        phone_enrichment: {
+                            ...fallbackPhoneEnrichment,
+                            message: revealPreferences.revealPhone
+                                ? 'Phone enrichment was not queued because profile lookup failed.'
+                                : null,
+                        },
                         debug_logs: debugLogs,
                     },
                     { status: 502 }
                 );
             }
 
-            const personCandidates = extractPeopleCandidatesFromApolloResponse(apolloResponse);
+            const providerResponse = apolloResponse.apolloResponse;
+
+            const personCandidates = extractPeopleCandidatesFromApolloResponse(providerResponse);
 
             if (personCandidates.length > 1) {
                 log('LinkedIn profile search returned multiple people. Rejecting response.', {
@@ -682,13 +935,24 @@ export async function POST(req: Request) {
                             email: revealPreferences.revealEmail,
                             phone: revealPreferences.revealPhone,
                         },
+                        applied_reveal: {
+                            email: appliedReveal.revealEmail,
+                            phone: appliedReveal.revealPhone,
+                        },
+                        provider_warnings: providerWarnings,
+                        phone_enrichment: {
+                            ...fallbackPhoneEnrichment,
+                            message: revealPreferences.revealPhone
+                                ? 'Phone enrichment was not queued because profile search returned multiple candidates.'
+                                : null,
+                        },
                         debug_logs: debugLogs,
                     },
                     { status: 502 }
                 );
             }
 
-            const person = extractPersonFromApolloResponse(apolloResponse);
+            const person = extractPersonFromApolloResponse(providerResponse);
 
             if (!person) {
                 log('No person found for provided LinkedIn URL.');
@@ -698,6 +962,17 @@ export async function POST(req: Request) {
                     requested_reveal: {
                         email: revealPreferences.revealEmail,
                         phone: revealPreferences.revealPhone,
+                    },
+                    applied_reveal: {
+                        email: appliedReveal.revealEmail,
+                        phone: appliedReveal.revealPhone,
+                    },
+                    provider_warnings: providerWarnings,
+                    phone_enrichment: {
+                        ...fallbackPhoneEnrichment,
+                        message: revealPreferences.revealPhone
+                            ? 'Phone enrichment was not queued because no profile match was found.'
+                            : null,
                     },
                     leads_count: 0,
                     leads: [],
@@ -710,6 +985,21 @@ export async function POST(req: Request) {
                 return NextResponse.json(
                     {
                         error: 'Apollo response missing person id',
+                        requested_reveal: {
+                            email: revealPreferences.revealEmail,
+                            phone: revealPreferences.revealPhone,
+                        },
+                        applied_reveal: {
+                            email: appliedReveal.revealEmail,
+                            phone: appliedReveal.revealPhone,
+                        },
+                        provider_warnings: providerWarnings,
+                        phone_enrichment: {
+                            ...fallbackPhoneEnrichment,
+                            message: revealPreferences.revealPhone
+                                ? 'Phone enrichment was not queued because Apollo response was invalid.'
+                                : null,
+                        },
                         debug_logs: debugLogs,
                     },
                     { status: 502 }
@@ -718,6 +1008,28 @@ export async function POST(req: Request) {
 
             await saveToSupabase([person], batchRunId, log);
 
+            const phoneEnrichment = await queueLinkedInPhoneEnrichment(
+                apiKey,
+                person.id,
+                revealPreferences,
+                requestOrigin,
+                log
+            );
+
+            if (phoneEnrichment.queued) {
+                await markLeadAsPendingPhoneEnrichment(person.id, log);
+            } else if (phoneEnrichment.requested && phoneEnrichment.message) {
+                providerWarnings.push(phoneEnrichment.message);
+            }
+
+            if (phoneEnrichment.requested && phoneEnrichment.status === 'failed' && phoneEnrichment.provider_details) {
+                log('Phone enrichment queue provider details', {
+                    apollo_id: person.id,
+                    provider_status: phoneEnrichment.provider_status,
+                    provider_details: phoneEnrichment.provider_details,
+                });
+            }
+
             return NextResponse.json({
                 batch_run_id: batchRunId,
                 search_mode: resolvedSearchMode,
@@ -725,6 +1037,12 @@ export async function POST(req: Request) {
                     email: revealPreferences.revealEmail,
                     phone: revealPreferences.revealPhone,
                 },
+                applied_reveal: {
+                    email: appliedReveal.revealEmail,
+                    phone: appliedReveal.revealPhone,
+                },
+                provider_warnings: providerWarnings,
+                phone_enrichment: phoneEnrichment,
                 leads_count: 1,
                 leads: [person],
                 debug_logs: debugLogs,
@@ -964,19 +1282,17 @@ async function fetchPersonByLinkedInUrl(
     revealPreferences: LinkedInRevealPreferences,
     log: (msg: string, data?: any) => void,
     retries = 2
-): Promise<any> {
-    try {
+): Promise<LinkedInLookupResult> {
+    const requestApolloProfile = async (
+        retryCount: number
+    ): Promise<{ ok: true; data: any } | { ok: false; status: number; details: string }> => {
         const params = new URLSearchParams();
         params.set('linkedin_url', linkedInUrl);
         params.set('reveal_personal_emails', String(revealPreferences.revealEmail));
-        params.set('reveal_phone_number', String(revealPreferences.revealPhone));
+        // NOTE: Phone reveal is queued asynchronously via webhook after we know the person ID.
+        params.set('reveal_phone_number', 'false');
 
         const url = `https://api.apollo.io/api/v1/people/match?${params.toString()}`;
-        log('Fetching Person by LinkedIn URL', {
-            linkedin_url: linkedInUrl,
-            reveal_email: revealPreferences.revealEmail,
-            reveal_phone: revealPreferences.revealPhone,
-        });
 
         const response = await fetch(url, {
             method: 'POST',
@@ -989,26 +1305,77 @@ async function fetchPersonByLinkedInUrl(
             body: '{}',
         });
 
-        if (response.status === 429 && retries > 0) {
+        if (response.status === 429 && retryCount > 0) {
             log('Apollo rate limit reached for LinkedIn profile search. Retrying...');
-            await delay(1200 * (3 - retries));
-            return fetchPersonByLinkedInUrl(apiKey, linkedInUrl, revealPreferences, log, retries - 1);
+            await delay(1200 * (3 - retryCount));
+            return requestApolloProfile(retryCount - 1);
         }
 
         if (!response.ok) {
             const errorText = await response.text();
-            log(`Apollo API Error (People Enrichment): ${response.status} - ${errorText}`);
             return {
-                error: `Apollo API Error (${response.status})`,
+                ok: false,
+                status: response.status,
                 details: errorText,
             };
         }
 
-        return await response.json();
+        return {
+            ok: true,
+            data: await response.json(),
+        };
+    };
+
+    try {
+        const providerWarnings: string[] = [];
+        const appliedReveal = {
+            revealEmail: revealPreferences.revealEmail,
+            revealPhone: false,
+        };
+
+        if (revealPreferences.revealPhone) {
+            providerWarnings.push('Phone reveal deferred to asynchronous webhook enrichment step.');
+        }
+
+        log('Fetching Person by LinkedIn URL', {
+            linkedin_url: linkedInUrl,
+            requested_reveal_email: revealPreferences.revealEmail,
+            requested_reveal_phone: revealPreferences.revealPhone,
+            applied_reveal_email: appliedReveal.revealEmail,
+            applied_reveal_phone: appliedReveal.revealPhone,
+        });
+
+        const profileResult = await requestApolloProfile(retries);
+
+        if (!profileResult.ok) {
+            log(`Apollo API Error (People Enrichment): ${profileResult.status} - ${profileResult.details}`);
+            return {
+                apolloResponse: null,
+                error: `Apollo API Error (${profileResult.status})`,
+                details: profileResult.details,
+                appliedReveal,
+                providerWarnings,
+            };
+        }
+
+        return {
+            apolloResponse: profileResult.data,
+            error: null,
+            details: null,
+            appliedReveal,
+            providerWarnings,
+        };
     } catch (error: any) {
         log('Error fetching person by LinkedIn URL:', error?.message || error);
         return {
+            apolloResponse: null,
             error: error?.message || 'Unknown error while fetching person by LinkedIn URL',
+            details: null,
+            appliedReveal: {
+                revealEmail: revealPreferences.revealEmail,
+                revealPhone: false,
+            },
+            providerWarnings: [],
         };
     }
 }
