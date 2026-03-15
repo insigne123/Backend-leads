@@ -405,6 +405,85 @@ function pickBestOrganizationCandidate(
     return { selected: null, ambiguous: true };
 }
 
+function firstHeaderValue(value?: string | null): string | null {
+    if (typeof value !== 'string') return null;
+    const first = value.split(',')[0]?.trim();
+    return first || null;
+}
+
+function isPrivateOrLocalHostname(hostname: string): boolean {
+    const normalized = hostname.trim().toLowerCase();
+    if (!normalized) return true;
+
+    const blocked = new Set(['localhost', '0.0.0.0', '::1', '[::1]']);
+    if (blocked.has(normalized)) return true;
+
+    if (normalized.endsWith('.local') || normalized.endsWith('.internal')) return true;
+
+    const ipv4Parts = normalized.split('.').map((part) => Number(part));
+    const looksLikeIpv4 = ipv4Parts.length === 4 && ipv4Parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255);
+
+    if (looksLikeIpv4) {
+        const [a, b] = ipv4Parts;
+
+        if (a === 0 || a === 10 || a === 127) return true;
+        if (a === 169 && b === 254) return true;
+        if (a === 172 && b >= 16 && b <= 31) return true;
+        if (a === 192 && b === 168) return true;
+        return false;
+    }
+
+    // Hostnames without dots are usually internal service names.
+    if (!normalized.includes('.')) return true;
+
+    return false;
+}
+
+function isValidPublicHttpsUrl(url: URL): boolean {
+    if (url.protocol !== 'https:') return false;
+    if (isPrivateOrLocalHostname(url.hostname)) return false;
+    return true;
+}
+
+function resolveRequestPublicOrigin(req: Request): string | null {
+    const forwardedHost = firstHeaderValue(req.headers.get('x-forwarded-host'));
+    const forwardedProto = firstHeaderValue(req.headers.get('x-forwarded-proto')) || 'https';
+
+    if (forwardedHost) {
+        try {
+            const forwardedOrigin = new URL(`${forwardedProto}://${forwardedHost}`);
+            if (isValidPublicHttpsUrl(forwardedOrigin)) {
+                return forwardedOrigin.origin;
+            }
+        } catch {
+            // ignore invalid forwarded headers
+        }
+    }
+
+    const hostHeader = firstHeaderValue(req.headers.get('host'));
+    if (hostHeader) {
+        try {
+            const hostOrigin = new URL(`${forwardedProto}://${hostHeader}`);
+            if (isValidPublicHttpsUrl(hostOrigin)) {
+                return hostOrigin.origin;
+            }
+        } catch {
+            // ignore invalid host header
+        }
+    }
+
+    try {
+        const urlOrigin = new URL(req.url);
+        if (isValidPublicHttpsUrl(urlOrigin)) {
+            return urlOrigin.origin;
+        }
+    } catch {
+        // ignore malformed req.url
+    }
+
+    return null;
+}
+
 function resolveLinkedInProfileWebhookUrl(
     recordId: string,
     revealPreferences: Pick<LinkedInRevealPreferences, 'revealEmail'>,
@@ -432,13 +511,11 @@ function resolveLinkedInProfileWebhookUrl(
         try {
             let parsed = new URL(trimmed);
 
-            if (parsed.protocol !== 'https:') {
-                continue;
-            }
-
             if (!parsed.pathname.toLowerCase().endsWith('/api/apollo-webhook')) {
                 parsed = new URL('/api/apollo-webhook', parsed);
             }
+
+            if (!isValidPublicHttpsUrl(parsed)) continue;
 
             parsed.searchParams.set('record_id', recordId);
             parsed.searchParams.set('table_name', LINKEDIN_PROFILE_TABLE_NAME);
@@ -483,7 +560,7 @@ async function queueLinkedInPhoneEnrichment(
             requested: true,
             queued: false,
             status: 'skipped',
-            message: 'Phone enrichment was not queued because no webhook URL is configured.',
+            message: 'Phone enrichment was not queued because no valid public HTTPS webhook URL is configured.',
             webhook_url: null,
             provider_status: null,
             provider_details: null,
@@ -703,13 +780,7 @@ export async function POST(req: Request) {
         }
 
         const batchRunId = uuidv4();
-        const requestOrigin = (() => {
-            try {
-                return new URL(req.url).origin;
-            } catch {
-                return null;
-            }
-        })();
+        const requestOrigin = resolveRequestPublicOrigin(req);
 
         log(`Starting batch run: ${batchRunId} for user: ${user_id}`);
         log('Request Body:', body);
@@ -722,6 +793,7 @@ export async function POST(req: Request) {
             company_name: normalizedCompanyName,
             selected_organization_id: explicitSelectedOrganizationId || null,
             include_similar_titles: includeSimilarTitles,
+            request_origin: requestOrigin,
         });
 
         if (
