@@ -1,0 +1,10 @@
+   ▲ Next.js 15.5.7 (Turbopack)
+   - Local:        http://localhost:9204
+   - Network:      http://192.168.6.164:9204
+   - Environments: .env
+
+ ✓ Starting...
+ ✓ Ready in 1585ms
+ ○ Compiling /api/lead-research ...
+ ✓ Compiled /api/lead-research in 1496ms
+ POST /api/lead-research 200 in 133103ms
