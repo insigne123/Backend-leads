@@ -71,6 +71,7 @@ export default function Home() {
   const [searchMode, setSearchMode] = useState<SearchMode>('batch');
   const [linkedinUrl, setLinkedinUrl] = useState('');
   const [companyName, setCompanyName] = useState('');
+  const [organizationDomains, setOrganizationDomains] = useState('');
   const [industryKeywords, setIndustryKeywords] = useState('');
   const [locations, setLocations] = useState('');
   const [titles, setTitles] = useState('');
@@ -141,6 +142,7 @@ export default function Home() {
         payload.max_results = 1;
       } else if (searchMode === 'company_name') {
         payload.company_name = companyName.trim();
+        payload.organization_domains = parseCommaList(organizationDomains);
         payload.titles = parseCommaList(titles);
         payload.seniorities = parseCommaList(seniorities);
         payload.include_similar_titles = false;
@@ -307,10 +309,28 @@ export default function Home() {
                           setSelectedOrganizationId('');
                         }
                       }}
-                      required
                     />
                     <p className="text-xs text-muted-foreground">
-                      We search organizations first. If there are multiple matches, you select the right one.
+                      Search by company name and optionally narrow the match with one or more domains.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="organizationDomains">Organization Domains (Optional)</Label>
+                    <Input
+                      id="organizationDomains"
+                      placeholder="e.g. grupoexpro.com"
+                      value={organizationDomains}
+                      onChange={(e) => {
+                        setOrganizationDomains(e.target.value);
+                        if (organizationCandidates.length > 0) {
+                          setOrganizationCandidates([]);
+                          setSelectedOrganizationId('');
+                        }
+                      }}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Add one or more domains separated by commas to target an exact company.
                     </p>
                   </div>
 

@@ -20,6 +20,14 @@ interface LeadSearchRequest {
     linkedinProfileUrl?: string;
     company_name?: string;
     companyName?: string;
+    organization_domains?: string[] | string;
+    organizationDomains?: string[] | string;
+    organization_domain_list?: string[] | string;
+    organizationDomainList?: string[] | string;
+    organization_domain?: string;
+    organizationDomain?: string;
+    company_domain?: string;
+    companyDomain?: string;
     selected_organization_id?: string;
     selectedOrganizationId?: string;
     selected_organization_name?: string;
@@ -138,10 +146,12 @@ function resolveSearchMode(body: LeadSearchRequest): SearchMode {
     if (hasLinkedInUrl) return 'linkedin_profile';
 
     const companyNameCandidate = body.company_name || body.companyName || '';
+    const organizationDomains = resolveOrganizationDomains(body);
     const selectedOrganizationId = body.selected_organization_id || body.selectedOrganizationId || '';
 
     if (
         (typeof companyNameCandidate === 'string' && companyNameCandidate.trim() !== '') ||
+        organizationDomains.length > 0 ||
         (typeof selectedOrganizationId === 'string' && selectedOrganizationId.trim() !== '')
     ) {
         return 'company_name';
@@ -306,6 +316,70 @@ function normalizeStringArray(value: unknown): string[] {
     );
 }
 
+function normalizeDomain(value: string): string {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed) return '';
+
+    const withProtocol = /^[a-z]+:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+
+    try {
+        const parsed = new URL(withProtocol);
+        return parsed.hostname.replace(/^www\./, '').trim().toLowerCase();
+    } catch {
+        return trimmed
+            .replace(/^https?:\/\//i, '')
+            .split('/')[0]
+            .replace(/^www\./, '')
+            .trim()
+            .toLowerCase();
+    }
+}
+
+function normalizeDomainArray(value: unknown): string[] {
+    const rawValues: string[] = [];
+
+    if (Array.isArray(value)) {
+        for (const entry of value) {
+            if (typeof entry === 'string') rawValues.push(entry);
+        }
+    } else if (typeof value === 'string') {
+        rawValues.push(...value.split(','));
+    }
+
+    return Array.from(
+        new Set(
+            rawValues
+                .map((entry) => normalizeDomain(entry))
+                .filter(Boolean)
+        )
+    );
+}
+
+function resolveOrganizationDomains(body: LeadSearchRequest): string[] {
+    const values = [
+        body.organization_domains,
+        body.organizationDomains,
+        body.organization_domain_list,
+        body.organizationDomainList,
+        body.organization_domain,
+        body.organizationDomain,
+        body.company_domain,
+        body.companyDomain,
+    ];
+
+    const domains = values.flatMap((value) => normalizeDomainArray(value));
+    return Array.from(new Set(domains));
+}
+
+function candidateMatchesAnyDomain(candidate: OrganizationCandidate, domains: string[]): boolean {
+    if (domains.length === 0) return true;
+
+    const primaryDomain = normalizeDomain(candidate.primary_domain || '');
+    const websiteDomain = normalizeDomain(candidate.website_url || '');
+
+    return domains.some((domain) => primaryDomain === domain || websiteDomain === domain);
+}
+
 function normalizeCompanyName(value: unknown): string {
     if (typeof value !== 'string') return '';
     return value.trim();
@@ -332,7 +406,11 @@ function resolveIncludeSimilarTitles(body: LeadSearchRequest, searchMode: Search
     return undefined;
 }
 
-function toOrganizationCandidate(company: any, companyNameQuery: string): OrganizationCandidate | null {
+function toOrganizationCandidate(
+    company: any,
+    companyNameQuery: string,
+    preferredDomains: string[] = []
+): OrganizationCandidate | null {
     const id = (company?.id || '').toString().trim();
     const name = (company?.name || '').toString().trim();
     if (!id || !name) return null;
@@ -349,6 +427,8 @@ function toOrganizationCandidate(company: any, companyNameQuery: string): Organi
     const normalizedQuery = normalizeCompanyToken(companyNameQuery);
     const normalizedName = normalizeCompanyToken(name);
     const normalizedDomain = normalizeCompanyToken(primaryDomain || '');
+    const normalizedPrimaryDomain = normalizeDomain(primaryDomain || '');
+    const normalizedWebsiteDomain = normalizeDomain(websiteUrl || '');
 
     let matchScore = 0;
     if (normalizedQuery && normalizedName === normalizedQuery) {
@@ -361,6 +441,13 @@ function toOrganizationCandidate(company: any, companyNameQuery: string): Organi
 
     if (normalizedQuery && normalizedDomain && normalizedDomain.includes(normalizedQuery)) {
         matchScore += 20;
+    }
+
+    if (preferredDomains.length > 0) {
+        const exactDomainMatch = preferredDomains.includes(normalizedPrimaryDomain) || preferredDomains.includes(normalizedWebsiteDomain);
+        if (exactDomainMatch) {
+            matchScore += 500;
+        }
     }
 
     if (primaryDomain) matchScore += 5;
@@ -674,6 +761,56 @@ async function markLeadAsPendingPhoneEnrichment(recordId: string, log: (msg: str
     log('Marked lead as pending phone enrichment.', { record_id: recordId });
 }
 
+async function fetchOrganizationCandidatesByDomains(
+    apiKey: string,
+    domains: string[],
+    companyName: string,
+    log: (msg: string, data?: any) => void
+): Promise<OrganizationCandidate[]> {
+    const candidatesMap = new Map<string, OrganizationCandidate>();
+
+    for (const domain of domains) {
+        try {
+            const url = `https://api.apollo.io/api/v1/organizations/enrich?domain=${encodeURIComponent(domain)}`;
+            log('Enriching organization by domain', { domain });
+
+            const response = await fetch(url, {
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Cache-Control': 'no-cache',
+                    'accept': 'application/json',
+                    'x-api-key': apiKey,
+                },
+            });
+
+            if (!response.ok) {
+                const errorText = await response.text();
+                log(`Apollo API Error (Organization Enrichment): ${response.status} - ${errorText}`, { domain });
+                continue;
+            }
+
+            const data = await response.json();
+            const organization = data?.organization || data;
+            const candidate = toOrganizationCandidate(organization, companyName, domains);
+
+            if (candidate) {
+                candidatesMap.set(candidate.id, candidate);
+            }
+        } catch (error: any) {
+            log('Error enriching organization by domain:', {
+                domain,
+                error: error?.message || String(error),
+            });
+        }
+    }
+
+    return Array.from(candidatesMap.values()).sort((a, b) => {
+        if (b.match_score !== a.match_score) return b.match_score - a.match_score;
+        return a.name.localeCompare(b.name);
+    });
+}
+
 export async function POST(req: Request) {
     const debugLogs: string[] = [];
     const log = (msg: string, data?: any) => {
@@ -695,6 +832,14 @@ export async function POST(req: Request) {
             linkedinProfileUrl,
             company_name,
             companyName,
+            organization_domains,
+            organizationDomains,
+            organization_domain_list,
+            organizationDomainList,
+            organization_domain,
+            organizationDomain,
+            company_domain,
+            companyDomain,
             selected_organization_id,
             selectedOrganizationId,
             selected_organization_name,
@@ -738,6 +883,14 @@ export async function POST(req: Request) {
             linkedinProfileUrl,
             company_name,
             companyName,
+            organization_domains,
+            organizationDomains,
+            organization_domain_list,
+            organizationDomainList,
+            organization_domain,
+            organizationDomain,
+            company_domain,
+            companyDomain,
             selected_organization_id,
             selectedOrganizationId,
             industry_keywords,
@@ -765,6 +918,7 @@ export async function POST(req: Request) {
         const normalizedSeniorities = normalizeStringArray(seniorities);
 
         const normalizedCompanyName = normalizeCompanyName(company_name || companyName || '');
+        const normalizedOrganizationDomains = resolveOrganizationDomains(body);
         const explicitSelectedOrganizationId = resolveSelectedOrganizationId(body);
 
         if (resolvedSearchMode === 'linkedin_profile') {
@@ -791,6 +945,7 @@ export async function POST(req: Request) {
             reveal_email: revealPreferences.revealEmail,
             reveal_phone: revealPreferences.revealPhone,
             company_name: normalizedCompanyName,
+            organization_domains: normalizedOrganizationDomains,
             selected_organization_id: explicitSelectedOrganizationId || null,
             include_similar_titles: includeSimilarTitles,
             request_origin: requestOrigin,
@@ -835,27 +990,44 @@ export async function POST(req: Request) {
 
                 organizationCandidates = [selectedOrganization];
             } else {
-                if (!normalizedCompanyName) {
+                if (!normalizedCompanyName && normalizedOrganizationDomains.length === 0) {
                     return NextResponse.json(
                         {
-                            error: 'Missing company_name for company search mode',
+                            error: 'Missing company_name or organization_domains for company search mode',
                             debug_logs: debugLogs,
                         },
                         { status: 400 }
                     );
                 }
 
-                organizationCandidates = await fetchOrganizationCandidatesByName(
-                    apiKey,
-                    normalizedCompanyName,
-                    log
-                );
+                if (normalizedOrganizationDomains.length > 0) {
+                    organizationCandidates = await fetchOrganizationCandidatesByDomains(
+                        apiKey,
+                        normalizedOrganizationDomains,
+                        normalizedCompanyName,
+                        log
+                    );
+                }
+
+                if (organizationCandidates.length === 0 && normalizedCompanyName) {
+                    organizationCandidates = await fetchOrganizationCandidatesByName(
+                        apiKey,
+                        normalizedCompanyName,
+                        normalizedOrganizationDomains,
+                        log
+                    );
+                } else if (organizationCandidates.length > 0 && normalizedOrganizationDomains.length > 0) {
+                    organizationCandidates = organizationCandidates.filter((candidate) =>
+                        candidateMatchesAnyDomain(candidate, normalizedOrganizationDomains)
+                    );
+                }
 
                 if (organizationCandidates.length === 0) {
                     return NextResponse.json({
                         batch_run_id: batchRunId,
                         search_mode: resolvedSearchMode,
                         company_name: normalizedCompanyName,
+                        organization_domains: normalizedOrganizationDomains,
                         organization_candidates: [],
                         leads_count: 0,
                         leads: [],
@@ -873,6 +1045,7 @@ export async function POST(req: Request) {
                         batch_run_id: batchRunId,
                         search_mode: resolvedSearchMode,
                         company_name: normalizedCompanyName,
+                        organization_domains: normalizedOrganizationDomains,
                         requires_organization_selection: true,
                         organization_candidates: organizationCandidates,
                         leads_count: 0,
@@ -914,6 +1087,7 @@ export async function POST(req: Request) {
                 batch_run_id: batchRunId,
                 search_mode: resolvedSearchMode,
                 company_name: normalizedCompanyName || selectedOrganization.name,
+                organization_domains: normalizedOrganizationDomains,
                 selected_organization: selectedOrganization,
                 organization_candidates: organizationCandidates,
                 includes_similar_titles: includeSimilarTitles,
@@ -1279,6 +1453,7 @@ export async function POST(req: Request) {
 async function fetchOrganizationCandidatesByName(
     apiKey: string,
     companyName: string,
+    preferredDomains: string[],
     log: (msg: string, data?: any) => void,
     retries = 2
 ): Promise<OrganizationCandidate[]> {
@@ -1308,7 +1483,7 @@ async function fetchOrganizationCandidatesByName(
         if (response.status === 429 && retries > 0) {
             log('Apollo rate limit reached for organization search. Retrying...');
             await delay(1200 * (3 - retries));
-            return fetchOrganizationCandidatesByName(apiKey, companyName, log, retries - 1);
+            return fetchOrganizationCandidatesByName(apiKey, companyName, preferredDomains, log, retries - 1);
         }
 
         if (!response.ok) {
@@ -1321,7 +1496,7 @@ async function fetchOrganizationCandidatesByName(
         const organizations = Array.isArray(data?.organizations) ? data.organizations : [];
 
         const candidates: OrganizationCandidate[] = organizations
-            .map((organization: any) => toOrganizationCandidate(organization, companyName))
+            .map((organization: any) => toOrganizationCandidate(organization, companyName, preferredDomains))
             .filter((candidate: OrganizationCandidate | null): candidate is OrganizationCandidate => Boolean(candidate));
 
         const dedupedMap = new Map<string, OrganizationCandidate>();
