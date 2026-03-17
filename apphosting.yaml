@@ -5,3 +5,31 @@ runConfig:
   # Increase this value if you'd like to automatically spin up
   # more instances in response to increased traffic.
   maxInstances: 1
+
+env:
+  - variable: VANE_BASE_URL
+    value: https://alan-flexible-boards-payments.trycloudflare.com
+
+  - variable: VANE_PROVIDER_NAME
+    value: OpenAI
+
+  - variable: VANE_CHAT_MODEL_KEY
+    value: gpt-4o-mini
+
+  - variable: VANE_EMBEDDING_MODEL_KEY
+    value: text-embedding-3-small
+
+  - variable: VANE_AUTH_HEADER_NAME
+    value: x-vane-auth
+
+  - variable: VANE_TIMEOUT_MS
+    value: "240000"
+
+  - variable: VANE_AUTH_HEADER_VALUE
+    secret: VANE_AUTH_HEADER_VALUE
+
+  - variable: LEAD_RESEARCH_WORKER_SECRET
+    secret: LEAD_RESEARCH_WORKER_SECRET
+
+  - variable: SUPABASE_SERVICE_ROLE_KEY
+    secret: SUPABASE_SERVICE_ROLE_KEY
