@@ -7,6 +7,15 @@ runConfig:
   maxInstances: 1
 
 env:
+  - variable: NEXT_PUBLIC_SUPABASE_URL
+    secret: NEXT_PUBLIC_SUPABASE_URL
+
+  - variable: NEXT_PUBLIC_SUPABASE_ANON_KEY
+    secret: NEXT_PUBLIC_SUPABASE_ANON_KEY
+
+  - variable: APOLLO_WEBHOOK_BASE_URL
+    secret: APOLLO_WEBHOOK_BASE_URL
+
   - variable: VANE_BASE_URL
     value: https://alan-flexible-boards-payments.trycloudflare.com
 
@@ -33,3 +42,9 @@ env:
 
   - variable: SUPABASE_SERVICE_ROLE_KEY
     secret: SUPABASE_SERVICE_ROLE_KEY
+
+  - variable: APOLLO_API_KEY
+    secret: APOLLO_API_KEY
+
+  - variable: API_SECRET_KEY
+    secret: API_SECRET_KEY

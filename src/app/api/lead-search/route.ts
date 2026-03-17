@@ -4,7 +4,7 @@ import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const DEFAULT_APOLLO_WEBHOOK_BASE_URL = 'https://studio--studio-6624658482-61b7b.us-central1.hosted.app';
+const DEFAULT_APOLLO_WEBHOOK_BASE_URL = process.env.APOLLO_WEBHOOK_BASE_URL?.trim() || '';
 const LINKEDIN_PROFILE_TABLE_NAME = 'people_search_leads';
 
 type SearchMode = 'batch' | 'linkedin_profile' | 'company_name';

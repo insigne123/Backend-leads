@@ -4,7 +4,59 @@ import { getServiceSupabase } from '@/lib/supabase';
 // Helper for delay
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
-const BASE_URL = 'https://studio--studio-6624658482-61b7b.us-central1.hosted.app';
+function firstHeaderValue(value?: string | null): string | null {
+    if (typeof value !== 'string') return null;
+    const first = value.split(',')[0]?.trim();
+    return first || null;
+}
+
+function isLikelyPublicHttpsOrigin(origin: string): boolean {
+    try {
+        const url = new URL(origin);
+        if (url.protocol !== 'https:') return false;
+        const hostname = url.hostname.toLowerCase();
+        if (!hostname || hostname === 'localhost' || hostname === '0.0.0.0' || hostname === '127.0.0.1') {
+            return false;
+        }
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function resolveBaseUrl(req: Request): string {
+    const envCandidates = [
+        process.env.APOLLO_WEBHOOK_BASE_URL,
+        process.env.APP_URL,
+        process.env.NEXT_PUBLIC_APP_URL,
+    ];
+
+    for (const candidate of envCandidates) {
+        if (typeof candidate === 'string' && isLikelyPublicHttpsOrigin(candidate.trim())) {
+            return candidate.trim().replace(/\/+$/, '');
+        }
+    }
+
+    const forwardedHost = firstHeaderValue(req.headers.get('x-forwarded-host'));
+    const forwardedProto = firstHeaderValue(req.headers.get('x-forwarded-proto')) || 'https';
+    if (forwardedHost) {
+        const candidate = `${forwardedProto}://${forwardedHost}`;
+        if (isLikelyPublicHttpsOrigin(candidate)) {
+            return candidate.replace(/\/+$/, '');
+        }
+    }
+
+    try {
+        const origin = new URL(req.url).origin;
+        if (isLikelyPublicHttpsOrigin(origin)) {
+            return origin.replace(/\/+$/, '');
+        }
+    } catch {
+        // ignore malformed req.url
+    }
+
+    throw new Error('Missing public base URL for Apollo webhook. Set APOLLO_WEBHOOK_BASE_URL or APP_URL.');
+}
 
 type RevealPreferences = {
     revealEmail: boolean;
@@ -112,8 +164,8 @@ function resolveRevealPreferences(body: any): RevealPreferences {
     };
 }
 
-function buildWebhookUrl(recordId: string, tableName: string, revealPreferences: Pick<RevealPreferences, 'revealEmail' | 'revealPhone'>): string {
-    const webhookUrl = new URL(`${BASE_URL}/api/apollo-webhook`);
+function buildWebhookUrl(baseUrl: string, recordId: string, tableName: string, revealPreferences: Pick<RevealPreferences, 'revealEmail' | 'revealPhone'>): string {
+    const webhookUrl = new URL(`${baseUrl}/api/apollo-webhook`);
     webhookUrl.searchParams.set('record_id', recordId);
     webhookUrl.searchParams.set('table_name', tableName);
     webhookUrl.searchParams.set('reveal_email', String(revealPreferences.revealEmail));
@@ -300,6 +352,7 @@ export async function POST(req: Request) {
         const table_name = (body.table_name as string)?.trim() || 'enriched_leads';
         const apolloPersonId = (lead?.apollo_id || lead?.id || '').toString().trim();
         const revealPreferences = resolveRevealPreferences(body);
+        const baseUrl = resolveBaseUrl(req);
 
         if (!record_id || !lead || !table_name) {
             return NextResponse.json({ error: 'Missing required fields: record_id, lead, or table_name' }, { status: 400 });
@@ -319,10 +372,10 @@ export async function POST(req: Request) {
         let matchResponse;
         if (apolloPersonId) {
             console.log(`Enriching via Apollo ID: ${apolloPersonId}`);
-            matchResponse = await enrichWithApolloId(apiKey, apolloPersonId, record_id, table_name, revealPreferences);
+            matchResponse = await enrichWithApolloId(apiKey, apolloPersonId, record_id, table_name, revealPreferences, baseUrl);
         } else {
             console.log('Enrichment: Enriching via Search/Match');
-            matchResponse = await enrichWithApollo(apiKey, lead, record_id, table_name, revealPreferences);
+            matchResponse = await enrichWithApollo(apiKey, lead, record_id, table_name, revealPreferences, baseUrl);
         }
 
         const matchedPerson = extractPersonFromApolloResponse(matchResponse);
@@ -543,10 +596,11 @@ async function enrichWithApolloId(
     recordId: string,
     tableName: string,
     revealPreferences: RevealPreferences,
+    baseUrl: string,
     retries = 2
 ): Promise<any> {
     // Construct Webhook URL
-    const webhookUrl = buildWebhookUrl(recordId, tableName, revealPreferences);
+    const webhookUrl = buildWebhookUrl(baseUrl, recordId, tableName, revealPreferences);
 
     const params = new URLSearchParams();
     params.set('reveal_personal_emails', String(revealPreferences.revealEmail));
@@ -573,7 +627,7 @@ async function enrichWithApolloId(
         if (response.status === 429 && retries > 0) {
             console.warn('Apollo Rate Limit (429). Retrying...');
             await delay(1500 * (3 - retries));
-            return enrichWithApolloId(apiKey, apolloId, recordId, tableName, revealPreferences, retries - 1);
+            return enrichWithApolloId(apiKey, apolloId, recordId, tableName, revealPreferences, baseUrl, retries - 1);
         }
 
         if (!response.ok) {
@@ -596,10 +650,11 @@ async function enrichWithApollo(
     recordId: string,
     tableName: string,
     revealPreferences: RevealPreferences,
+    baseUrl: string,
     retries = 2
 ): Promise<any> {
     // Construct Webhook URL
-    const webhookUrl = buildWebhookUrl(recordId, tableName, revealPreferences);
+    const webhookUrl = buildWebhookUrl(baseUrl, recordId, tableName, revealPreferences);
 
     const params = new URLSearchParams();
     params.set('reveal_personal_emails', String(revealPreferences.revealEmail));
@@ -635,7 +690,7 @@ async function enrichWithApollo(
         if (response.status === 429 && retries > 0) {
             console.warn('Apollo Rate Limit (429). Retrying...');
             await delay(1500 * (3 - retries)); // Exponential-ish backoff
-            return enrichWithApollo(apiKey, lead, recordId, tableName, revealPreferences, retries - 1);
+            return enrichWithApollo(apiKey, lead, recordId, tableName, revealPreferences, baseUrl, retries - 1);
         }
 
         if (!response.ok) {
