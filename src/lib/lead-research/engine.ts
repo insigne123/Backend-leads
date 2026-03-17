@@ -6,6 +6,7 @@ import {
     CompetitiveContext,
     Diagnostics,
     IceBreaker,
+    LeadResearchCostEstimate,
     LeadContext,
     LeadResearchApiResponse,
     LeadResearchReport,
@@ -29,6 +30,19 @@ type SectionExecutionResult = SectionExecutionDiagnostics & {
     sources: Array<{ title: string; url: string; content: string }>;
     referencedUrls: string[];
 };
+
+function buildEmptyCostEstimate(): LeadResearchCostEstimate {
+    return {
+        currency: 'USD',
+        model: null,
+        estimated_input_tokens: 0,
+        estimated_output_tokens: 0,
+        estimated_total_tokens: 0,
+        estimated_cost_usd: null,
+        methodology: 'heuristic',
+        note: 'Estimated from Vane request/response sizes and model pricing. It is not exact because Vane does not expose provider usage per request.',
+    };
+}
 
 function defaultWebsiteSummary(): WebsiteSummary {
     return {
@@ -567,6 +581,9 @@ function buildEmptyReport(input: NormalizedLeadResearchInput, reportId: string):
             sections_completed: [],
             sections_missing: [],
             raw_hits_count: 0,
+            vane_calls: [],
+            total_vane_duration_ms: 0,
+            estimated_cost: buildEmptyCostEstimate(),
         },
         can_upgrade_to_deep: input.options.depth !== 'deep',
         deep_available: input.options.depth !== 'deep',
@@ -649,6 +666,102 @@ function buildApiResponse(report: LeadResearchReport): LeadResearchApiResponse {
     };
 }
 
+function hasDataForSection(planSection: ResearchSectionPlan['sections'][number], report: LeadResearchReport): boolean {
+    switch (planSection) {
+        case 'company_research':
+            return Boolean(report.website_summary.overview || report.company_context.overview);
+        case 'recent_signals':
+            return report.signals.length > 0;
+        case 'lead_research':
+            return Boolean(
+                report.lead_context.profile_summary ||
+                report.lead_context.role_summary ||
+                report.lead_context.ice_breakers.length > 0
+            );
+        case 'buyer_intelligence':
+            return Boolean(
+                report.buyer_intelligence.relevance_summary ||
+                report.outreach_pack.talk_tracks.length > 0 ||
+                report.outreach_pack.subject_lines.length > 0
+            );
+        case 'competitive_context':
+            return report.competitive_context.competitor_mentions.length > 0 || report.competitive_context.tech_stack_detected.length > 0;
+        case 'call_prep':
+            return Boolean(report.outreach_pack.call_script.opening || report.outreach_pack.follow_up_sequence.length > 0);
+        default:
+            return false;
+    }
+}
+
+function applyPlanDiagnostics(
+    plan: ResearchSectionPlan,
+    sectionDiagnostics: SectionExecutionResult,
+    report: LeadResearchReport,
+    sourceCatalog: ReturnType<typeof createSourceCatalog>,
+    rawSectionDiagnostics: SectionExecutionDiagnostics[]
+) {
+    rawSectionDiagnostics.push({
+        section: sectionDiagnostics.section,
+        query: sectionDiagnostics.query,
+        raw_source_count: sectionDiagnostics.raw_source_count,
+        warnings: sectionDiagnostics.warnings,
+        duration_ms: sectionDiagnostics.duration_ms,
+        estimated_input_tokens: sectionDiagnostics.estimated_input_tokens,
+        estimated_output_tokens: sectionDiagnostics.estimated_output_tokens,
+        estimated_total_tokens: sectionDiagnostics.estimated_total_tokens,
+        estimated_cost_usd: sectionDiagnostics.estimated_cost_usd,
+        model: sectionDiagnostics.model,
+        sections: sectionDiagnostics.sections,
+    });
+
+    if (sectionDiagnostics.providerVersion) {
+        report.provider_version = sectionDiagnostics.providerVersion;
+    }
+
+    sectionDiagnostics.sources.forEach((source) => {
+        sourceCatalog.add(source.url, source.title, source.content);
+    });
+    sectionDiagnostics.referencedUrls.forEach((url) => {
+        sourceCatalog.add(url, urlDomain(url) || 'Referenced source', '');
+    });
+
+    if (Object.keys(sectionDiagnostics.payload).length > 0) {
+        deepMergeReport(report, sectionDiagnostics.payload);
+    }
+
+    if (sectionDiagnostics.warnings.length > 0) {
+        report.warnings.push(...sectionDiagnostics.warnings);
+    }
+
+    report.diagnostics.raw_hits_count += sectionDiagnostics.raw_source_count;
+    report.diagnostics.total_vane_duration_ms += sectionDiagnostics.duration_ms;
+    report.diagnostics.vane_calls.push({
+        key: plan.key,
+        sections: plan.sections,
+        duration_ms: sectionDiagnostics.duration_ms,
+        raw_source_count: sectionDiagnostics.raw_source_count,
+        estimated_input_tokens: sectionDiagnostics.estimated_input_tokens,
+        estimated_output_tokens: sectionDiagnostics.estimated_output_tokens,
+        estimated_total_tokens: sectionDiagnostics.estimated_total_tokens,
+        estimated_cost_usd: sectionDiagnostics.estimated_cost_usd,
+        model: sectionDiagnostics.model,
+        warnings: sectionDiagnostics.warnings,
+    });
+
+    plan.sections.forEach((section) => {
+        const sectionHasData = hasDataForSection(section, report);
+
+        if (sectionHasData) {
+            if (!report.diagnostics.sections_completed.includes(section)) {
+                report.diagnostics.sections_completed.push(section);
+            }
+            report.diagnostics.sections_missing = report.diagnostics.sections_missing.filter((item) => item !== section);
+        } else if (!report.diagnostics.sections_missing.includes(section)) {
+            report.diagnostics.sections_missing.push(section);
+        }
+    });
+}
+
 async function executeSection(
     plan: ResearchSectionPlan,
 ): Promise<SectionExecutionResult> {
@@ -677,6 +790,13 @@ async function executeSection(
         query: plan.query,
         raw_source_count: searchResult.sources.length,
         warnings,
+        duration_ms: searchResult.durationMs,
+        estimated_input_tokens: searchResult.estimatedInputTokens,
+        estimated_output_tokens: searchResult.estimatedOutputTokens,
+        estimated_total_tokens: searchResult.estimatedTotalTokens,
+        estimated_cost_usd: searchResult.estimatedCostUsd,
+        model: searchResult.model,
+        sections: plan.sections,
         payload: parsedPayload,
         providerVersion: searchResult.providerVersion,
         sources: searchResult.sources,
@@ -696,7 +816,8 @@ export async function runLeadResearch(
 
     const sectionResults = await Promise.allSettled(plans.map((plan) => executeSection(plan)));
 
-    sectionResults.forEach((result, index) => {
+    for (let index = 0; index < sectionResults.length; index += 1) {
+        const result = sectionResults[index];
         const plan = plans[index];
         report.diagnostics.queries.push(plan.query);
 
@@ -707,55 +828,64 @@ export async function runLeadResearch(
                 query: plan.query,
                 raw_source_count: 0,
                 warnings: [`Section ${plan.key} failed: ${errorMessage}`],
+                duration_ms: 0,
+                estimated_input_tokens: 0,
+                estimated_output_tokens: 0,
+                estimated_total_tokens: 0,
+                estimated_cost_usd: null,
+                model: null,
+                sections: plan.sections,
             });
             report.warnings.push(`Section ${plan.key} failed: ${errorMessage}`);
-            report.diagnostics.sections_missing.push(plan.key);
-            return;
+            plan.sections.forEach((section) => {
+                if (!report.diagnostics.sections_missing.includes(section)) {
+                    report.diagnostics.sections_missing.push(section);
+                }
+            });
+            continue;
         }
 
         const sectionDiagnostics = result.value;
-        rawSectionDiagnostics.push({
-            section: sectionDiagnostics.section,
-            query: sectionDiagnostics.query,
-            raw_source_count: sectionDiagnostics.raw_source_count,
-            warnings: sectionDiagnostics.warnings,
-        });
+        applyPlanDiagnostics(plan, sectionDiagnostics, report, sourceCatalog, rawSectionDiagnostics);
 
-        if (sectionDiagnostics.providerVersion) {
-            report.provider_version = sectionDiagnostics.providerVersion;
+        const parseFailed = sectionDiagnostics.warnings.some((warning) => warning.includes('Could not parse JSON'));
+        if (parseFailed && plan.fallbackPlans && plan.fallbackPlans.length > 0) {
+            report.warnings.push(`Bundle fallback activated for ${plan.key}.`);
+
+            const fallbackResults = await Promise.allSettled(plan.fallbackPlans.map((fallbackPlan) => executeSection(fallbackPlan)));
+
+            fallbackResults.forEach((fallbackResult, fallbackIndex) => {
+                const fallbackPlan = plan.fallbackPlans![fallbackIndex];
+                report.diagnostics.queries.push(fallbackPlan.query);
+
+                if (fallbackResult.status === 'rejected') {
+                    const errorMessage = fallbackResult.reason?.message || String(fallbackResult.reason);
+                    rawSectionDiagnostics.push({
+                        section: fallbackPlan.key,
+                        query: fallbackPlan.query,
+                        raw_source_count: 0,
+                        warnings: [`Section ${fallbackPlan.key} failed: ${errorMessage}`],
+                        duration_ms: 0,
+                        estimated_input_tokens: 0,
+                        estimated_output_tokens: 0,
+                        estimated_total_tokens: 0,
+                        estimated_cost_usd: null,
+                        model: null,
+                        sections: fallbackPlan.sections,
+                    });
+                    report.warnings.push(`Section ${fallbackPlan.key} failed: ${errorMessage}`);
+                    fallbackPlan.sections.forEach((section) => {
+                        if (!report.diagnostics.sections_missing.includes(section)) {
+                            report.diagnostics.sections_missing.push(section);
+                        }
+                    });
+                    return;
+                }
+
+                applyPlanDiagnostics(fallbackPlan, fallbackResult.value, report, sourceCatalog, rawSectionDiagnostics);
+            });
         }
-
-        sectionDiagnostics.sources.forEach((source) => {
-            sourceCatalog.add(source.url, source.title, source.content);
-        });
-        sectionDiagnostics.referencedUrls.forEach((url) => {
-            sourceCatalog.add(url, urlDomain(url) || 'Referenced source', '');
-        });
-
-        if (Object.keys(sectionDiagnostics.payload).length > 0) {
-            deepMergeReport(report, sectionDiagnostics.payload);
-        }
-
-        if (sectionDiagnostics.warnings.length > 0) {
-            report.warnings.push(...sectionDiagnostics.warnings);
-        }
-
-        report.diagnostics.raw_hits_count += sectionDiagnostics.raw_source_count;
-
-        const sectionHasData =
-            (plan.key === 'company_research' && Boolean(report.website_summary.overview || report.company_context.overview)) ||
-            (plan.key === 'recent_signals' && report.signals.length > 0) ||
-            (plan.key === 'lead_research' && Boolean(report.lead_context.profile_summary || report.lead_context.role_summary || report.lead_context.ice_breakers.length > 0)) ||
-            (plan.key === 'buyer_intelligence' && Boolean(report.buyer_intelligence.relevance_summary || report.outreach_pack.talk_tracks.length > 0 || report.outreach_pack.subject_lines.length > 0)) ||
-            (plan.key === 'competitive_context' && (report.competitive_context.competitor_mentions.length > 0 || report.competitive_context.tech_stack_detected.length > 0)) ||
-            (plan.key === 'call_prep' && Boolean(report.outreach_pack.call_script.opening || report.outreach_pack.follow_up_sequence.length > 0));
-
-        if (sectionHasData) {
-            report.diagnostics.sections_completed.push(plan.key);
-        } else {
-            report.diagnostics.sections_missing.push(plan.key);
-        }
-    });
+    }
 
     const allSources = sourceCatalog.toArray();
     const sourceIdByUrl = new Map(allSources.map((source) => [source.url, source.id]));
@@ -788,6 +918,23 @@ export async function runLeadResearch(
     report.status = computeStatus(report);
     report.duration_ms = Date.now() - start;
     report.generated_at = new Date().toISOString();
+    const totalEstimatedInputTokens = report.diagnostics.vane_calls.reduce((sum, call) => sum + call.estimated_input_tokens, 0);
+    const totalEstimatedOutputTokens = report.diagnostics.vane_calls.reduce((sum, call) => sum + call.estimated_output_tokens, 0);
+    const estimatedCosts = report.diagnostics.vane_calls
+        .map((call) => call.estimated_cost_usd)
+        .filter((value): value is number => typeof value === 'number');
+    report.diagnostics.estimated_cost = {
+        currency: 'USD',
+        model: report.diagnostics.vane_calls[0]?.model || null,
+        estimated_input_tokens: totalEstimatedInputTokens,
+        estimated_output_tokens: totalEstimatedOutputTokens,
+        estimated_total_tokens: totalEstimatedInputTokens + totalEstimatedOutputTokens,
+        estimated_cost_usd: estimatedCosts.length > 0
+            ? Number(estimatedCosts.reduce((sum, value) => sum + value, 0).toFixed(6))
+            : null,
+        methodology: 'heuristic',
+        note: 'Estimated from Vane request/response sizes and known model pricing. It is useful for budgeting, but not exact provider billing.',
+    };
     report.existing_compat = {
         cross: buildCrossReport(report),
         enhanced: buildEnhancedReport(report),

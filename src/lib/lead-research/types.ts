@@ -275,6 +275,33 @@ export type Diagnostics = {
     sections_completed: string[];
     sections_missing: string[];
     raw_hits_count: number;
+    vane_calls: VaneCallDiagnostics[];
+    total_vane_duration_ms: number;
+    estimated_cost: LeadResearchCostEstimate | null;
+};
+
+export type LeadResearchCostEstimate = {
+    currency: 'USD';
+    model: string | null;
+    estimated_input_tokens: number;
+    estimated_output_tokens: number;
+    estimated_total_tokens: number;
+    estimated_cost_usd: number | null;
+    methodology: 'heuristic';
+    note: string;
+};
+
+export type VaneCallDiagnostics = {
+    key: string;
+    sections: string[];
+    duration_ms: number;
+    raw_source_count: number;
+    estimated_input_tokens: number;
+    estimated_output_tokens: number;
+    estimated_total_tokens: number;
+    estimated_cost_usd: number | null;
+    model: string | null;
+    warnings: string[];
 };
 
 export type LeadResearchReport = {
@@ -358,6 +385,13 @@ export type SectionExecutionDiagnostics = {
     query: string;
     raw_source_count: number;
     warnings: string[];
+    duration_ms: number;
+    estimated_input_tokens: number;
+    estimated_output_tokens: number;
+    estimated_total_tokens: number;
+    estimated_cost_usd: number | null;
+    model: string | null;
+    sections: string[];
 };
 
 export type ProcessedLeadResearchResult = {

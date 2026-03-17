@@ -48,6 +48,12 @@ export type VaneSearchResult = {
     sources: Array<{ title: string; url: string; content: string }>;
     providerName: string;
     providerVersion: string | null;
+    model: string;
+    durationMs: number;
+    estimatedInputTokens: number;
+    estimatedOutputTokens: number;
+    estimatedTotalTokens: number;
+    estimatedCostUsd: number | null;
 };
 
 type VaneConfig = {
@@ -211,6 +217,37 @@ function normalizeSearchSources(sources: SearchSourceType[]): SearchSourceType[]
     return unique.length > 0 ? unique : ['web'];
 }
 
+function approximateTokens(value: string): number {
+    const chars = value.trim().length;
+    if (!chars) return 0;
+    return Math.max(1, Math.ceil(chars / 4));
+}
+
+function getModelPricing(model: string): { inputPerMillion: number; outputPerMillion: number } | null {
+    const envInput = process.env.VANE_INPUT_COST_PER_1M_USD;
+    const envOutput = process.env.VANE_OUTPUT_COST_PER_1M_USD;
+
+    if (envInput && envOutput) {
+        const inputPerMillion = Number(envInput);
+        const outputPerMillion = Number(envOutput);
+
+        if (Number.isFinite(inputPerMillion) && Number.isFinite(outputPerMillion)) {
+            return { inputPerMillion, outputPerMillion };
+        }
+    }
+
+    switch (model) {
+        case 'gpt-4o-mini':
+            return { inputPerMillion: 0.15, outputPerMillion: 0.6 };
+        case 'gpt-5-mini':
+            return { inputPerMillion: 0.25, outputPerMillion: 2.0 };
+        case 'gpt-5.4':
+            return { inputPerMillion: 2.5, outputPerMillion: 15.0 };
+        default:
+            return null;
+    }
+}
+
 export async function callVaneSearch(request: VaneSearchRequest): Promise<VaneSearchResult> {
     const config = getVaneConfig();
     const selection = await resolveProviderSelection(config);
@@ -233,6 +270,7 @@ export async function callVaneSearch(request: VaneSearchRequest): Promise<VaneSe
     };
 
     const url = `${config.baseUrl}/api/search`;
+    const startedAt = Date.now();
     const response = await fetchJsonWithRetry<VaneSearchResponse>(
         url,
         {
@@ -244,27 +282,58 @@ export async function callVaneSearch(request: VaneSearchRequest): Promise<VaneSe
         config.timeoutMs,
     );
 
+    const normalizedSources = Array.isArray(response.sources)
+        ? response.sources
+            .map((source) => {
+                const title = source.metadata?.title?.trim() || 'Untitled source';
+                const url = source.metadata?.url?.trim() || '';
+                const content = source.content?.trim() || '';
+
+                if (!url) return null;
+
+                return {
+                    title,
+                    url,
+                    content,
+                };
+            })
+            .filter((source): source is { title: string; url: string; content: string } => Boolean(source))
+        : [];
+
+    const queryTokens = approximateTokens(request.query);
+    const instructionTokens = approximateTokens(request.systemInstructions);
+    const sourceContextTokens = normalizedSources.reduce(
+        (sum, source) => sum + approximateTokens(`${source.title}\n${source.url}\n${source.content}`),
+        0,
+    );
+    const messageTokens = approximateTokens(typeof response.message === 'string' ? response.message : '');
+
+    const inputMultiplier = Number(process.env.VANE_COST_INPUT_MULTIPLIER || '3');
+    const outputMultiplier = Number(process.env.VANE_COST_OUTPUT_MULTIPLIER || '1.15');
+    const estimatedInputTokens = Math.max(
+        queryTokens + instructionTokens,
+        Math.round((queryTokens + instructionTokens) * (Number.isFinite(inputMultiplier) ? inputMultiplier : 3) + sourceContextTokens),
+    );
+    const estimatedOutputTokens = Math.max(
+        messageTokens,
+        Math.round(messageTokens * (Number.isFinite(outputMultiplier) ? outputMultiplier : 1.15)),
+    );
+    const pricing = getModelPricing(selection.chatModelKey);
+    const estimatedCostUsd = pricing
+        ? Number((((estimatedInputTokens / 1_000_000) * pricing.inputPerMillion) + ((estimatedOutputTokens / 1_000_000) * pricing.outputPerMillion)).toFixed(6))
+        : null;
+
     return {
         message: typeof response.message === 'string' ? response.message : '',
-        sources: Array.isArray(response.sources)
-            ? response.sources
-                .map((source) => {
-                    const title = source.metadata?.title?.trim() || 'Untitled source';
-                    const url = source.metadata?.url?.trim() || '';
-                    const content = source.content?.trim() || '';
-
-                    if (!url) return null;
-
-                    return {
-                        title,
-                        url,
-                        content,
-                    };
-                })
-                .filter((source): source is { title: string; url: string; content: string } => Boolean(source))
-            : [],
+        sources: normalizedSources,
         providerName: selection.providerName,
         providerVersion: config.providerVersion,
+        model: selection.chatModelKey,
+        durationMs: Date.now() - startedAt,
+        estimatedInputTokens,
+        estimatedOutputTokens,
+        estimatedTotalTokens: estimatedInputTokens + estimatedOutputTokens,
+        estimatedCostUsd,
     };
 }
 

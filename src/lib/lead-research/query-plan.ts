@@ -14,11 +14,13 @@ export type ResearchSectionKey =
     | 'call_prep';
 
 export type ResearchSectionPlan = {
-    key: ResearchSectionKey;
+    key: string;
+    sections: ResearchSectionKey[];
     query: string;
     systemInstructions: string;
     sources: SearchSourceType[];
     optimizationMode: 'speed' | 'balanced' | 'quality';
+    fallbackPlans?: ResearchSectionPlan[];
 };
 
 function languageInstruction(language: 'es' | 'en'): string {
@@ -84,6 +86,26 @@ function companyResearchInstructions(language: 'es' | 'en'): string {
     ].join(' ');
 }
 
+function companyBundleInstructions(language: 'es' | 'en', includeCompanyResearch: boolean, includeRecentSignals: boolean): string {
+    const schemaParts: string[] = [];
+
+    if (includeCompanyResearch) {
+        schemaParts.push('"website_summary":{"overview":string|null,"services":string[],"positioning":string|null,"source_urls":string[]}');
+        schemaParts.push('"company_context":{"overview":string|null,"business_model":string|null,"industry_context":string|null,"likely_priorities":string[],"growth_signals":string[],"pain_hypotheses":[{"title":string,"detail":string,"confidence":number,"source_urls":string[]}],"opportunity_hypotheses":[{"title":string,"detail":string,"confidence":number,"source_urls":string[]}],"risks":[{"title":string,"detail":string,"source_urls":string[]}]}');
+    }
+
+    if (includeRecentSignals) {
+        schemaParts.push('"signals":[{"type":"news|hiring|tech|site|social|financial|product|expansion","title":string,"summary":string,"url":string,"published_at":string|null,"importance":"high|medium|low","source_urls":string[]}]}');
+    }
+
+    return [
+        sharedRules(language),
+        'Focus on official website, public signals, newsroom, careers pages, reliable directories, and commercially relevant evidence.',
+        'Return JSON with this schema:',
+        `{${schemaParts.join(',')}}`,
+    ].join(' ');
+}
+
 function recentSignalsInstructions(language: 'es' | 'en'): string {
     return [
         sharedRules(language),
@@ -99,6 +121,27 @@ function leadResearchInstructions(language: 'es' | 'en'): string {
         'Focus on the person, their public profile, role context, likely responsibilities, public activity, and safe conversational ice breakers.',
         'Return JSON with this schema:',
         '{"lead_context":{"profile_summary":string|null,"role_summary":string|null,"likely_responsibilities":string[],"seniority_assessment":"decision_maker|influencer|champion|unknown","department":string|null,"tenure_hint":string|null,"recent_activity_summary":string|null,"found_recent_activity":boolean,"ice_breakers":[{"text":string,"why_it_works":string,"source_urls":string[]}]}}',
+    ].join(' ');
+}
+
+function leadStrategyBundleInstructions(language: 'es' | 'en', includeLeadResearch: boolean, includeBuyer: boolean): string {
+    const schemaParts: string[] = [];
+
+    if (includeLeadResearch) {
+        schemaParts.push('"lead_context":{"profile_summary":string|null,"role_summary":string|null,"likely_responsibilities":string[],"seniority_assessment":"decision_maker|influencer|champion|unknown","department":string|null,"tenure_hint":string|null,"recent_activity_summary":string|null,"found_recent_activity":boolean,"ice_breakers":[{"text":string,"why_it_works":string,"source_urls":string[]}]}}');
+    }
+
+    if (includeBuyer) {
+        schemaParts.push('"buyer_intelligence":{"relevance_summary":string|null,"fit_score":number|null,"fit_reasons":string[],"urgency_signals":string[],"recommended_angle":"cost_saving|efficiency|growth|risk|speed|talent|custom","recommended_channel":"email|linkedin|call","recommended_cta":string|null,"best_contact_timing_hint":string|null,"likely_objections":[{"objection":string,"rebuttal":string,"confidence":number}]}');
+        schemaParts.push('"outreach_pack":{"one_liner":string|null,"personalized_openers":[{"channel":"email|linkedin|call","text":string,"source_urls":string[]}],"talk_tracks":string[],"subject_lines":string[],"email_drafts":{"short":{"subject":string|null,"body":string|null},"medium":{"subject":string|null,"body":string|null},"challenger":{"subject":string|null,"body":string|null}},"linkedin_dm_variants":[{"style":"soft|direct|executive","text":string}],"call_openers":string[],"call_script":{"opening":string|null,"discovery_questions":string[],"value_bridge":string|null,"cta":string|null},"voicemail_script":string|null,"follow_up_sequence":[{"step":number,"channel":"email|linkedin|call","delay_days":number,"goal":string,"subject":string|null,"body":string}]}}');
+    }
+
+    return [
+        sharedRules(language),
+        'Focus on the person, their role, responsibilities, public context, and build a commercially useful outreach strategy grounded in public evidence.',
+        'Think like a B2B sales researcher and strategist. Keep drafts concise, credible, and backed by sources.',
+        'Return JSON with this schema:',
+        `{${schemaParts.join(',')}}`,
     ].join(' ');
 }
 
@@ -137,50 +180,110 @@ export function buildResearchSectionPlans(input: NormalizedLeadResearchInput): R
     const mode = sectionMode(input.options.depth);
     const plans: ResearchSectionPlan[] = [];
 
-    if (input.options.include_company_research) {
-        const domainClause = input.company.domain ? `Prioritize site:${input.company.domain} and official company sources.` : 'Prioritize official company sources.';
+    const includeCompanyBundle = input.options.include_company_research || input.options.include_recent_signals;
+    if (includeCompanyBundle) {
+        const domainClause = input.company.domain
+            ? `Prioritize site:${input.company.domain}, official company sources, newsroom, and careers pages.`
+            : 'Prioritize official company sources, newsroom, and careers pages.';
+
+        const companyTargets = [
+            input.options.include_company_research
+                ? 'website summary, services, positioning, business model, industry context, likely priorities, growth signals, pain hypotheses, opportunity hypotheses, and risks'
+                : null,
+            input.options.include_recent_signals
+                ? 'recent public commercial signals like hiring, partnerships, launches, expansion, executive moves, and strategic updates'
+                : null,
+        ].filter(Boolean).join(', plus ');
+
         plans.push({
-            key: 'company_research',
-            query: `Research this company for B2B sales intelligence. ${entityContext} ${domainClause} Find website summary, services, positioning, business model, industry context, likely priorities, growth signals, pain hypotheses, opportunity hypotheses, and risks.`,
-            systemInstructions: companyResearchInstructions(language),
-            sources: ['web', 'discussions'],
+            key: 'company_bundle',
+            sections: [
+                ...(input.options.include_company_research ? ['company_research' as const] : []),
+                ...(input.options.include_recent_signals ? ['recent_signals' as const] : []),
+            ],
+            query: `Research this company for B2B sales intelligence. ${entityContext} ${domainClause} Find ${companyTargets}.`,
+            systemInstructions: companyBundleInstructions(language, input.options.include_company_research, input.options.include_recent_signals),
+            sources: ['web'],
             optimizationMode: mode,
+            fallbackPlans: [
+                ...(input.options.include_company_research
+                    ? [{
+                        key: 'company_research',
+                        sections: ['company_research' as const],
+                        query: `Research this company for B2B sales intelligence. ${entityContext} ${domainClause} Find website summary, services, positioning, business model, industry context, likely priorities, growth signals, pain hypotheses, opportunity hypotheses, and risks.`,
+                        systemInstructions: companyResearchInstructions(language),
+                        sources: ['web'] as SearchSourceType[],
+                        optimizationMode: mode,
+                    } satisfies ResearchSectionPlan]
+                    : []),
+                ...(input.options.include_recent_signals
+                    ? [{
+                        key: 'recent_signals',
+                        sections: ['recent_signals' as const],
+                        query: `Find recent public commercial signals for this company and lead. ${entityContext} Focus on news, hiring, expansion, launches, partnerships, social activity, and strategic changes relevant for outbound sales.`,
+                        systemInstructions: recentSignalsInstructions(language),
+                        sources: ['web'] as SearchSourceType[],
+                        optimizationMode: mode,
+                    } satisfies ResearchSectionPlan]
+                    : []),
+            ],
         });
     }
 
-    if (input.options.include_recent_signals) {
-        plans.push({
-            key: 'recent_signals',
-            query: `Find recent public commercial signals for this company and lead. ${entityContext} Focus on news, hiring, expansion, launches, partnerships, social activity, and strategic changes relevant for outbound sales.`,
-            systemInstructions: recentSignalsInstructions(language),
-            sources: ['web', 'discussions'],
-            optimizationMode: mode,
-        });
-    }
+    const includeLeadBundle = input.options.include_lead_research || input.options.include_outreach_pack || input.options.include_call_prep;
+    if (includeLeadBundle) {
+        const leadTargets = [
+            input.options.include_lead_research
+                ? 'public profile context, role summary, likely responsibilities, recent public activity, and evidence-based ice breakers'
+                : null,
+            (input.options.include_outreach_pack || input.options.include_call_prep)
+                ? 'fit, urgency signals, recommended angle, channel, CTA, likely objections, email drafts, LinkedIn DM variants, call openers, and follow-up sequence'
+                : null,
+        ].filter(Boolean).join(', plus ');
 
-    if (input.options.include_lead_research) {
         plans.push({
-            key: 'lead_research',
-            query: `Research this person for outbound sales preparation. ${entityContext} Find public profile context, role summary, likely responsibilities, recent public activity, and evidence-based ice breakers.`,
-            systemInstructions: leadResearchInstructions(language),
+            key: 'lead_strategy_bundle',
+            sections: [
+                ...(input.options.include_lead_research ? ['lead_research' as const] : []),
+                ...((input.options.include_outreach_pack || input.options.include_call_prep) ? ['buyer_intelligence' as const] : []),
+            ],
+            query: `Research this lead and build sales strategy. ${entityContext} ${sellerContext} Find ${leadTargets}.`,
+            systemInstructions: leadStrategyBundleInstructions(
+                language,
+                input.options.include_lead_research,
+                input.options.include_outreach_pack || input.options.include_call_prep,
+            ),
             sources: ['web', 'discussions'],
             optimizationMode: mode,
-        });
-    }
-
-    if (input.options.include_outreach_pack || input.options.include_call_prep) {
-        plans.push({
-            key: 'buyer_intelligence',
-            query: `Create sales intelligence and outreach strategy for this lead and company. ${entityContext} ${sellerContext} Identify fit, urgency signals, recommended angle, channel, CTA, likely objections, email drafts, LinkedIn DM variants, call script, and follow-up sequence.`,
-            systemInstructions: buyerInstructions(language),
-            sources: ['web', 'discussions'],
-            optimizationMode: mode,
+            fallbackPlans: [
+                ...(input.options.include_lead_research
+                    ? [{
+                        key: 'lead_research',
+                        sections: ['lead_research' as const],
+                        query: `Research this person for outbound sales preparation. ${entityContext} Find public profile context, role summary, likely responsibilities, recent public activity, and evidence-based ice breakers.`,
+                        systemInstructions: leadResearchInstructions(language),
+                        sources: ['web', 'discussions'] as SearchSourceType[],
+                        optimizationMode: mode,
+                    } satisfies ResearchSectionPlan]
+                    : []),
+                ...((input.options.include_outreach_pack || input.options.include_call_prep)
+                    ? [{
+                        key: 'buyer_intelligence',
+                        sections: ['buyer_intelligence' as const],
+                        query: `Create sales intelligence and outreach strategy for this lead and company. ${entityContext} ${sellerContext} Identify fit, urgency signals, recommended angle, channel, CTA, likely objections, email drafts, LinkedIn DM variants, call script, and follow-up sequence.`,
+                        systemInstructions: buyerInstructions(language),
+                        sources: ['web', 'discussions'] as SearchSourceType[],
+                        optimizationMode: mode,
+                    } satisfies ResearchSectionPlan]
+                    : []),
+            ],
         });
     }
 
     if (input.options.depth === 'deep' && input.options.include_competitive_context) {
         plans.push({
             key: 'competitive_context',
+            sections: ['competitive_context'],
             query: `Research competitive and strategic context for this account. ${entityContext} ${sellerContext} Identify competitors, alternatives, tech stack clues, and buying committee suggestions relevant for a deep B2B sales strategy.`,
             systemInstructions: competitiveInstructions(language),
             sources: ['web', 'discussions'],
@@ -191,6 +294,7 @@ export function buildResearchSectionPlans(input: NormalizedLeadResearchInput): R
     if (input.options.depth === 'deep' && input.options.include_call_prep) {
         plans.push({
             key: 'call_prep',
+            sections: ['call_prep'],
             query: `Produce advanced call preparation for this prospect. ${entityContext} ${sellerContext} Focus on opening, discovery questions, value bridge, CTA, voicemail, and follow-up cadence grounded in public evidence.`,
             systemInstructions: callPrepInstructions(language),
             sources: ['web', 'discussions'],
