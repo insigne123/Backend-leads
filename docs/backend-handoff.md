@@ -34,6 +34,10 @@ Vane is used for web research and commercial context.
 
 Main Apollo search endpoint.
 
+Compatible alias also available:
+
+- `POST /api/leads/search`
+
 Supports these modes:
 
 - `search_mode = "batch"`
@@ -135,6 +139,10 @@ Behavior:
 
 Generic Apollo enrichment worker.
 
+Compatible alias also available:
+
+- `POST /api/opportunities/enrich-apollo`
+
 Used for enriching a known record in a known table.
 
 Requires backend auth:
@@ -170,6 +178,10 @@ Behavior:
 ### 3) `POST /api/apollo-webhook`
 
 Receiver for Apollo webhook callbacks.
+
+Compatible alias also available:
+
+- `POST /api/webhooks/apollo`
 
 Used by both:
 

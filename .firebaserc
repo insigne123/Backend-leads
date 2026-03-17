@@ -1,0 +1,7 @@
+{
+  "projects": {
+    "default": "backend-apollo-leads-prod",
+    "backend-prod": "backend-apollo-leads-prod",
+    "old-studio": "studio-6624658482-61b7b"
+  }
+}
