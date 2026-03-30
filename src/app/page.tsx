@@ -26,6 +26,8 @@ interface OrganizationCandidate {
   match_score?: number;
 }
 
+type LinkedInPhoneSyncState = 'idle' | 'pending' | 'success' | 'warning';
+
 function parseCommaList(value: string): string[] | undefined {
   const entries = value
     .split(',')
@@ -57,6 +59,10 @@ function resolvePrimaryPhone(lead: any): string {
   return trimmed || 'N/A';
 }
 
+function leadHasPhone(lead: any): boolean {
+  return resolvePrimaryPhone(lead) !== 'N/A';
+}
+
 export default function Home() {
   const [loading, setLoading] = useState(false);
   const [runs, setRuns] = useState<BatchRun[]>([]);
@@ -65,6 +71,9 @@ export default function Home() {
   const [leads, setLeads] = useState<any[]>([]);
   const [organizationCandidates, setOrganizationCandidates] = useState<OrganizationCandidate[]>([]);
   const [selectedOrganizationId, setSelectedOrganizationId] = useState('');
+  const [pendingLinkedInLeadId, setPendingLinkedInLeadId] = useState<string | null>(null);
+  const [linkedInPhoneSyncState, setLinkedInPhoneSyncState] = useState<LinkedInPhoneSyncState>('idle');
+  const [linkedInPhoneSyncMessage, setLinkedInPhoneSyncMessage] = useState('');
 
   // Form State
   const [userId, setUserId] = useState('test-user-1');
@@ -88,6 +97,91 @@ export default function Home() {
       setSelectedOrganizationId('');
     }
   }, [searchMode]);
+
+  useEffect(() => {
+    if (!pendingLinkedInLeadId) {
+      return;
+    }
+
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout> | null = null;
+    let attempts = 0;
+    const maxAttempts = 10;
+
+    const pollLead = async () => {
+      attempts += 1;
+
+      try {
+        const res = await fetch(`/api/lead-search?record_id=${encodeURIComponent(pendingLinkedInLeadId)}`, {
+          cache: 'no-store',
+        });
+
+        if (!res.ok) {
+          throw new Error(`Failed to refresh lead (${res.status})`);
+        }
+
+        const data = await res.json();
+        const refreshedLead = data.lead;
+
+        if (cancelled || !refreshedLead?.id) {
+          return;
+        }
+
+        setLeads((currentLeads) =>
+          currentLeads.map((lead) => (lead.id === refreshedLead.id ? { ...lead, ...refreshedLead } : lead))
+        );
+
+        const enrichmentStatus = typeof refreshedLead.enrichment_status === 'string'
+          ? refreshedLead.enrichment_status.trim().toLowerCase()
+          : '';
+
+        if (leadHasPhone(refreshedLead)) {
+          setLinkedInPhoneSyncState('success');
+          setLinkedInPhoneSyncMessage('Phone synced from Apollo and is now available in the result table.');
+          setPendingLinkedInLeadId(null);
+          return;
+        }
+
+        if (enrichmentStatus && !enrichmentStatus.startsWith('pending')) {
+          setLinkedInPhoneSyncState('warning');
+          setLinkedInPhoneSyncMessage('Apollo finished the enrichment, but it did not return a phone number for this profile.');
+          setPendingLinkedInLeadId(null);
+          return;
+        }
+      } catch (error) {
+        if (attempts >= maxAttempts) {
+          if (!cancelled) {
+            setLinkedInPhoneSyncState('warning');
+            setLinkedInPhoneSyncMessage('Could not refresh the phone enrichment status automatically.');
+            setPendingLinkedInLeadId(null);
+          }
+          return;
+        }
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      if (attempts >= maxAttempts) {
+        setLinkedInPhoneSyncState('warning');
+        setLinkedInPhoneSyncMessage('Phone enrichment is still processing in the background. Refresh again in a few moments if needed.');
+        setPendingLinkedInLeadId(null);
+        return;
+      }
+
+      timeoutId = setTimeout(pollLead, 3000);
+    };
+
+    void pollLead();
+
+    return () => {
+      cancelled = true;
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+      }
+    };
+  }, [pendingLinkedInLeadId]);
 
   const fetchRuns = async () => {
     const { data, error } = await supabase
@@ -128,6 +222,9 @@ export default function Home() {
     );
     setDebugLogs([]);
     setLeads([]);
+    setPendingLinkedInLeadId(null);
+    setLinkedInPhoneSyncState('idle');
+    setLinkedInPhoneSyncMessage('');
 
     try {
       const payload: Record<string, any> = {
@@ -214,12 +311,37 @@ export default function Home() {
         setStatus(`Success! Found ${data.leads_count} leads. Batch ID: ${data.batch_run_id}`);
       }
 
+      const nextLeads = Array.isArray(data.leads) ? data.leads : [];
+
       if (data.debug_logs) {
         setDebugLogs(data.debug_logs);
       }
-      if (data.leads) {
-        setLeads(data.leads);
+      if (nextLeads.length > 0) {
+        setLeads(nextLeads);
       }
+
+      if (isLinkedInProfileSearch) {
+        const firstLead = nextLeads[0];
+        const phoneEnrichmentStatus = data.phone_enrichment?.status;
+        const phoneEnrichmentMessage = typeof data.phone_enrichment?.message === 'string'
+          ? data.phone_enrichment.message
+          : '';
+
+        if (firstLead && leadHasPhone(firstLead)) {
+          setLinkedInPhoneSyncState('success');
+          setLinkedInPhoneSyncMessage('Phone available for this profile.');
+        } else if (data.phone_enrichment?.queued && firstLead?.id) {
+          setLinkedInPhoneSyncState('pending');
+          setLinkedInPhoneSyncMessage('Phone enrichment queued. Waiting for Apollo webhook...');
+          setPendingLinkedInLeadId(firstLead.id);
+        } else if (phoneEnrichmentMessage) {
+          setLinkedInPhoneSyncState(
+            phoneEnrichmentStatus === 'failed' || phoneEnrichmentStatus === 'skipped' ? 'warning' : 'success'
+          );
+          setLinkedInPhoneSyncMessage(phoneEnrichmentMessage);
+        }
+      }
+
       fetchRuns(); // Refresh logs
     } catch (error: any) {
       setStatus(`Error: ${error.message}`);
@@ -461,6 +583,26 @@ export default function Home() {
               </Alert>
             )}
 
+            {linkedInPhoneSyncState !== 'idle' && (
+              <Alert className="mt-4">
+                {linkedInPhoneSyncState === 'pending' ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : linkedInPhoneSyncState === 'warning' ? (
+                  <AlertCircle className="h-4 w-4" />
+                ) : (
+                  <CheckCircle2 className="h-4 w-4" />
+                )}
+                <AlertTitle>
+                  {linkedInPhoneSyncState === 'pending'
+                    ? 'Phone Enrichment'
+                    : linkedInPhoneSyncState === 'warning'
+                      ? 'Phone Status'
+                      : 'Phone Ready'}
+                </AlertTitle>
+                <AlertDescription>{linkedInPhoneSyncMessage}</AlertDescription>
+              </Alert>
+            )}
+
             {debugLogs.length > 0 && (
               <div className="mt-6">
                 <h3 className="text-sm font-semibold mb-2">Debug Logs</h3>
@@ -552,7 +694,13 @@ export default function Home() {
                       <TableCell>{lead.title}</TableCell>
                       <TableCell>{lead.organization?.name || lead.organization_name}</TableCell>
                       <TableCell>{lead.email || 'N/A'}</TableCell>
-                      <TableCell>{resolvePrimaryPhone(lead)}</TableCell>
+                      <TableCell>
+                        {leadHasPhone(lead)
+                          ? resolvePrimaryPhone(lead)
+                          : typeof lead.enrichment_status === 'string' && lead.enrichment_status.toLowerCase().startsWith('pending')
+                            ? 'Pending...'
+                            : 'N/A'}
+                      </TableCell>
                       <TableCell>
                         {lead.linkedin_url ? (
                           <a href={lead.linkedin_url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">

@@ -17,7 +17,7 @@ env:
     secret: APOLLO_WEBHOOK_BASE_URL
 
   - variable: VANE_BASE_URL
-    value: https://alan-flexible-boards-payments.trycloudflare.com
+    secret: VANE_BASE_URL
 
   - variable: VANE_PROVIDER_NAME
     value: OpenAI

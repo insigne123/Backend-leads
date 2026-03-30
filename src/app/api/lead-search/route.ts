@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { getServiceSupabase, supabase } from '@/lib/supabase';
 import { v4 as uuidv4 } from 'uuid';
 import crypto from 'crypto';
 
@@ -114,6 +114,17 @@ type OrganizationCandidate = {
     country: string | null;
     match_score: number;
 };
+
+function getServerSupabase(log?: (msg: string, data?: any) => void) {
+    try {
+        return getServiceSupabase();
+    } catch (error: any) {
+        log?.('Warning: Missing service role key. Falling back to anonymous Supabase client.', {
+            error: error?.message || String(error),
+        });
+        return supabase;
+    }
+}
 
 function normalizeRequestedMode(value: unknown): string {
     if (typeof value !== 'string') return '';
@@ -278,6 +289,20 @@ function normalizeEmail(value: any): string | null {
     if (email.toLowerCase().startsWith('email_not_unlocked@')) return null;
 
     return email;
+}
+
+function normalizePhoneNumbers(value: unknown): any[] | null {
+    if (!Array.isArray(value)) return null;
+
+    const phoneNumbers = value.filter(Boolean);
+    return phoneNumbers.length > 0 ? phoneNumbers : null;
+}
+
+function normalizeOptionalString(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+
+    const trimmed = value.trim();
+    return trimmed || null;
 }
 
 function resolvePrimaryPhoneFromLead(lead: any): string | null {
@@ -742,7 +767,8 @@ async function queueLinkedInPhoneEnrichment(
 }
 
 async function markLeadAsPendingPhoneEnrichment(recordId: string, log: (msg: string, data?: any) => void) {
-    const { error } = await supabase
+    const dbClient = getServerSupabase(log);
+    const { error } = await dbClient
         .from(LINKEDIN_PROFILE_TABLE_NAME)
         .update({
             enrichment_status: 'pending',
@@ -759,6 +785,56 @@ async function markLeadAsPendingPhoneEnrichment(recordId: string, log: (msg: str
     }
 
     log('Marked lead as pending phone enrichment.', { record_id: recordId });
+}
+
+async function fetchLeadSnapshot(
+    dbClient: any,
+    recordId: string,
+    log?: (msg: string, data?: any) => void
+): Promise<any | null> {
+    const { data, error } = await dbClient
+        .from(LINKEDIN_PROFILE_TABLE_NAME)
+        .select('*')
+        .eq('id', recordId)
+        .maybeSingle();
+
+    if (error) {
+        log?.('Warning: Failed to fetch persisted lead snapshot.', {
+            record_id: recordId,
+            error: error.message,
+        });
+        return null;
+    }
+
+    return data || null;
+}
+
+export async function GET(req: Request) {
+    const url = new URL(req.url);
+    const recordId =
+        url.searchParams.get('record_id')?.trim() ||
+        url.searchParams.get('recordId')?.trim() ||
+        '';
+
+    if (!recordId) {
+        return NextResponse.json({ error: 'Missing record_id' }, { status: 400 });
+    }
+
+    const dbClient = getServerSupabase();
+    const lead = await fetchLeadSnapshot(dbClient, recordId);
+
+    if (!lead) {
+        return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
+    }
+
+    return NextResponse.json(
+        { lead },
+        {
+            headers: {
+                'Cache-Control': 'no-store',
+            },
+        }
+    );
 }
 
 async function fetchOrganizationCandidatesByDomains(
@@ -822,6 +898,7 @@ export async function POST(req: Request) {
 
     try {
         const body: LeadSearchRequest = await req.json();
+        const dbClient = getServerSupabase(log);
         const {
             user_id,
             search_mode,
@@ -1081,7 +1158,7 @@ export async function POST(req: Request) {
                 log
             );
 
-            await saveToSupabase(leads, batchRunId, log);
+            const savedLeads = await saveToSupabase(dbClient, leads, batchRunId, log);
 
             return NextResponse.json({
                 batch_run_id: batchRunId,
@@ -1091,8 +1168,8 @@ export async function POST(req: Request) {
                 selected_organization: selectedOrganization,
                 organization_candidates: organizationCandidates,
                 includes_similar_titles: includeSimilarTitles,
-                leads_count: leads.length,
-                leads,
+                leads_count: savedLeads.length,
+                leads: savedLeads,
                 debug_logs: debugLogs,
             });
         }
@@ -1252,7 +1329,7 @@ export async function POST(req: Request) {
                 );
             }
 
-            await saveToSupabase([person], batchRunId, log);
+            const savedLeads = await saveToSupabase(dbClient, [person], batchRunId, log);
 
             const phoneEnrichment = await queueLinkedInPhoneEnrichment(
                 apiKey,
@@ -1267,6 +1344,9 @@ export async function POST(req: Request) {
             } else if (phoneEnrichment.requested && phoneEnrichment.message) {
                 providerWarnings.push(phoneEnrichment.message);
             }
+
+            const persistedLead = await fetchLeadSnapshot(dbClient, person.id, log);
+            const responseLead = persistedLead || savedLeads[0] || person;
 
             if (phoneEnrichment.requested && phoneEnrichment.status === 'failed' && phoneEnrichment.provider_details) {
                 log('Phone enrichment queue provider details', {
@@ -1290,7 +1370,7 @@ export async function POST(req: Request) {
                 provider_warnings: providerWarnings,
                 phone_enrichment: phoneEnrichment,
                 leads_count: 1,
-                leads: [person],
+                leads: [responseLead],
                 debug_logs: debugLogs,
             });
         }
@@ -1330,7 +1410,7 @@ export async function POST(req: Request) {
 
         // 2. Check Search Progress
         let startPage = 1;
-        const { data: progressData, error: progressError } = await supabase
+        const { data: progressData, error: progressError } = await dbClient
             .from('search_progress')
             .select('last_company_page')
             .eq('user_id', user_id)
@@ -1358,7 +1438,7 @@ export async function POST(req: Request) {
 
         // Update Progress if we fetched anything
         if (lastPageFetched >= startPage) {
-            const { error: upsertError } = await supabase
+            const { error: upsertError } = await dbClient
                 .from('search_progress')
                 .upsert({
                     user_id,
@@ -1432,13 +1512,13 @@ export async function POST(req: Request) {
         log(`Found ${allLeads.length} leads.`);
 
         // Step 4: Persist to Supabase
-        await saveToSupabase(allLeads, batchRunId, log);
+        const savedLeads = await saveToSupabase(dbClient, allLeads, batchRunId, log);
 
         return NextResponse.json({
             batch_run_id: batchRunId,
             search_mode: resolvedSearchMode,
-            leads_count: allLeads.length,
-            leads: allLeads,
+            leads_count: savedLeads.length,
+            leads: savedLeads,
             debug_logs: debugLogs,
         });
     } catch (error: any) {
@@ -1793,8 +1873,38 @@ async function fetchPeople(
     return people.slice(0, filters.max_results);
 }
 
-async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (msg: string, data?: any) => void) {
-    if (leads.length === 0) return;
+async function saveToSupabase(
+    dbClient: any,
+    leads: ApolloPerson[],
+    batchRunId: string,
+    log: (msg: string, data?: any) => void
+) {
+    if (leads.length === 0) return [];
+
+    const leadIds = leads
+        .map((lead: any) => lead?.id)
+        .filter((id: unknown): id is string => typeof id === 'string' && id.trim() !== '');
+
+    const existingById = new Map<string, any>();
+
+    if (leadIds.length > 0) {
+        const { data: existingRows, error: existingError } = await dbClient
+            .from(LINKEDIN_PROFILE_TABLE_NAME)
+            .select('id, email, email_status, linkedin_url, phone_numbers, primary_phone, enrichment_status')
+            .in('id', leadIds);
+
+        if (existingError) {
+            log('Warning: Failed to load existing lead snapshots before upsert.', {
+                error: existingError.message,
+            });
+        } else {
+            for (const row of existingRows || []) {
+                if (typeof row?.id === 'string' && row.id.trim() !== '') {
+                    existingById.set(row.id, row);
+                }
+            }
+        }
+    }
 
     // Remove filter and debug logs
     // The new API may return sparse data (no linkedin_url, obfuscated last_name).
@@ -1803,6 +1913,7 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (m
     const records = leads
         .filter((lead: any) => Boolean(lead?.id))
         .map((lead: any) => {
+            const existing = existingById.get(lead.id) || null;
             const firstName = (lead.first_name || '').toString().trim();
             const lastName = (lead.last_name || lead.last_name_obfuscated || '').toString().trim();
             const fullName = `${firstName} ${lastName}`.trim() || null;
@@ -1810,18 +1921,32 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (m
             const organizationDomain = lead.organization?.primary_domain || lead.organization_domain || null;
             const organizationIndustry = lead.organization?.industry || lead.organization_industry || null;
             const organizationSize = lead.organization?.estimated_num_employees || lead.organization_size || null;
-            const phoneNumbers = Array.isArray(lead.phone_numbers)
-                ? lead.phone_numbers.filter(Boolean)
-                : null;
+            const nextEmail = normalizeEmail(lead.email);
+            const existingEmail = normalizeEmail(existing?.email);
+            const resolvedEmail = nextEmail || existingEmail;
+            const nextEmailStatus = normalizeOptionalString(lead.email_status);
+            const existingEmailStatus = normalizeOptionalString(existing?.email_status);
+            const nextPhoneNumbers = normalizePhoneNumbers(lead.phone_numbers);
+            const existingPhoneNumbers = normalizePhoneNumbers(existing?.phone_numbers);
+            const resolvedPhoneNumbers = nextPhoneNumbers || existingPhoneNumbers;
+            const nextPrimaryPhone = resolvePrimaryPhoneFromLead(lead);
+            const existingPrimaryPhone = normalizeOptionalString(existing?.primary_phone);
+            const resolvedPrimaryPhone = nextPrimaryPhone || existingPrimaryPhone;
+            const nextLinkedInUrl = normalizeOptionalString(lead.linkedin_url);
+            const existingLinkedInUrl = normalizeOptionalString(existing?.linkedin_url);
+            const existingEnrichmentStatus = normalizeOptionalString(existing?.enrichment_status);
+            const resolvedEnrichmentStatus = resolvedPrimaryPhone || resolvedPhoneNumbers
+                ? 'completed'
+                : existingEnrichmentStatus || 'completed';
 
             return {
                 id: lead.id,
                 name: fullName,
                 first_name: firstName,
                 last_name: lastName,
-                email: normalizeEmail(lead.email),
-                email_status: lead.email_status || null,
-                linkedin_url: lead.linkedin_url || '',
+                email: resolvedEmail,
+                email_status: resolvedEmail ? nextEmailStatus || existingEmailStatus : null,
+                linkedin_url: nextLinkedInUrl || existingLinkedInUrl || '',
                 org_name: organizationName,
                 organization_name: organizationName,
                 organization_id: lead.organization?.id || lead.organization_id || null,
@@ -1835,9 +1960,9 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (m
                 headline: lead.headline || null,
                 seniority: lead.seniority || null,
                 departments: Array.isArray(lead.departments) && lead.departments.length > 0 ? lead.departments : null,
-                phone_numbers: phoneNumbers,
-                primary_phone: resolvePrimaryPhoneFromLead(lead),
-                enrichment_status: 'completed',
+                phone_numbers: resolvedPhoneNumbers,
+                primary_phone: resolvedPrimaryPhone,
+                enrichment_status: resolvedEnrichmentStatus,
                 organization_domain: organizationDomain,
                 organization_industry: organizationIndustry,
                 organization_size: organizationSize,
@@ -1849,12 +1974,12 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (m
 
     if (records.length === 0) {
         log('No valid leads with id to save into Supabase.');
-        return;
+        return [];
     }
 
     // Perform upsert and select the inserted rows to verify visibility
-    const { data, error } = await supabase
-        .from('people_search_leads')
+    const { data, error } = await dbClient
+        .from(LINKEDIN_PROFILE_TABLE_NAME)
         .upsert(records, { onConflict: 'id' })
         .select();
 
@@ -1871,8 +1996,8 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (m
         }
 
         // Double check count for this batch
-        const { count, error: countError } = await supabase
-            .from('people_search_leads')
+        const { count, error: countError } = await dbClient
+            .from(LINKEDIN_PROFILE_TABLE_NAME)
             .select('*', { count: 'exact', head: true })
             .eq('batch_run_id', batchRunId);
 
@@ -1882,4 +2007,6 @@ async function saveToSupabase(leads: ApolloPerson[], batchRunId: string, log: (m
             log(`Verification: Total rows in DB for this batch: ${count}`);
         }
     }
+
+    return Array.isArray(data) ? data : records;
 }
