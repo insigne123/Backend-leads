@@ -34,6 +34,12 @@ interface LeadSearchRequest {
     selectedOrganizationName?: string;
     selected_organization_domain?: string;
     selectedOrganizationDomain?: string;
+    selected_organization_website?: string;
+    selectedOrganizationWebsite?: string;
+    selected_organization_industry?: string;
+    selectedOrganizationIndustry?: string;
+    selected_organization_size?: number | string;
+    selectedOrganizationSize?: number | string;
     include_similar_titles?: boolean | string | number;
     includeSimilarTitles?: boolean | string | number;
     reveal_email?: boolean | string | number;
@@ -46,6 +52,9 @@ interface LeadSearchRequest {
     titles?: string[];
     seniorities?: string[];
     employee_ranges?: string[];
+    employeeRanges?: string[] | string;
+    employee_range?: string[] | string;
+    employeeRange?: string[] | string;
     max_results?: number;
     companies_only?: boolean;
     resume_search_progress?: boolean | string | number;
@@ -64,6 +73,17 @@ interface ApolloCompany {
     city?: string;
     state?: string;
     country?: string;
+    naics_codes?: string[];
+    sic_codes?: string[];
+    owned_by_organization_id?: string;
+    owned_by_organization?: {
+        id?: string;
+        name?: string;
+        website_url?: string;
+        primary_domain?: string;
+        industry?: string;
+        estimated_num_employees?: number;
+    };
 }
 
 interface ApolloPerson {
@@ -74,19 +94,19 @@ interface ApolloPerson {
     email?: string;
     linkedin_url?: string;
     organization?: {
-        id?: string;
-        name?: string;
-        primary_domain?: string;
-        website_url?: string;
-        industry?: string;
-        estimated_num_employees?: number;
+        id?: string | null;
+        name?: string | null;
+        primary_domain?: string | null;
+        website_url?: string | null;
+        industry?: string | null;
+        estimated_num_employees?: number | null;
     };
-    organization_id?: string;
-    organization_name?: string;
-    organization_domain?: string;
-    organization_website?: string;
-    organization_industry?: string;
-    organization_size?: number;
+    organization_id?: string | null;
+    organization_name?: string | null;
+    organization_domain?: string | null;
+    organization_website?: string | null;
+    organization_industry?: string | null;
+    organization_size?: number | null;
     title?: string;
 }
 
@@ -134,6 +154,27 @@ type OrganizationFallback = {
     website_url: string | null;
     industry: string | null;
     estimated_num_employees: number | null;
+};
+
+type SparseLeadSummary = {
+    missing_organization_id_count: number;
+    missing_organization_domain_count: number;
+    missing_organization_industry_count: number;
+    missing_email_count: number;
+    warnings: string[];
+};
+
+type SelectedOrganizationRequest = {
+    id: string;
+    name: string | null;
+    primary_domain: string | null;
+    website_url: string | null;
+    industry: string | null;
+    estimated_num_employees: number | null;
+};
+
+type OrganizationHydrationCache = {
+    byDomain: Map<string, OrganizationCandidate | null>;
 };
 
 function getServerSupabase(log?: (msg: string, data?: any) => void) {
@@ -366,6 +407,43 @@ function normalizeStringArray(value: unknown): string[] {
     );
 }
 
+function normalizeFlexibleStringArray(value: unknown): string[] {
+    const rawValues: string[] = [];
+
+    if (Array.isArray(value)) {
+        for (const entry of value) {
+            if (typeof entry === 'string') {
+                rawValues.push(entry);
+            } else if (typeof entry === 'number' && Number.isFinite(entry)) {
+                rawValues.push(String(entry));
+            }
+        }
+    } else if (typeof value === 'string') {
+        rawValues.push(...value.split(','));
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+        rawValues.push(String(value));
+    }
+
+    return Array.from(
+        new Set(
+            rawValues
+                .map((entry) => entry.trim())
+                .filter(Boolean)
+        )
+    );
+}
+
+function parseOptionalNumberish(value: unknown): number | null {
+    if (typeof value === 'number' && Number.isFinite(value)) return value;
+    if (typeof value !== 'string') return null;
+
+    const trimmed = value.trim();
+    if (!trimmed) return null;
+
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeDomain(value: string): string {
     const trimmed = value.trim().toLowerCase();
     if (!trimmed) return '';
@@ -383,6 +461,56 @@ function normalizeDomain(value: string): string {
             .trim()
             .toLowerCase();
     }
+}
+
+function isLowSignalOrganizationDomain(domain: string): boolean {
+    const normalized = normalizeDomain(domain);
+    if (!normalized) return true;
+
+    const blockedDomains = new Set([
+        'linktr.ee',
+        'linkedin.com',
+        'facebook.com',
+        'instagram.com',
+        'twitter.com',
+        'x.com',
+        'youtube.com',
+        'tiktok.com',
+        'medium.com',
+        'substack.com',
+        'beacons.ai',
+    ]);
+
+    return blockedDomains.has(normalized);
+}
+
+function inferIndustryFromClassificationCodes(company: Pick<ApolloCompany, 'naics_codes' | 'sic_codes'>): string | null {
+    const naicsCodes = Array.isArray(company.naics_codes)
+        ? company.naics_codes.filter((code): code is string => typeof code === 'string')
+        : [];
+    const sicCodes = Array.isArray(company.sic_codes)
+        ? company.sic_codes.filter((code): code is string => typeof code === 'string')
+        : [];
+
+    const firstNaics = naicsCodes[0]?.trim() || '';
+    const firstSic = sicCodes[0]?.trim() || '';
+
+    if (/^(48|49)/.test(firstNaics)) return 'transportation and warehousing';
+    if (/^(44|45)/.test(firstNaics)) return 'retail';
+    if (/^42/.test(firstNaics)) return 'wholesale';
+    if (/^51/.test(firstNaics)) return 'information services';
+    if (/^52/.test(firstNaics)) return 'financial services';
+    if (/^54/.test(firstNaics)) return 'professional services';
+    if (/^56/.test(firstNaics)) return 'administrative services';
+    if (/^61/.test(firstNaics)) return 'education';
+    if (/^62/.test(firstNaics)) return 'healthcare';
+
+    if (/^45/.test(firstSic)) return 'transportation';
+    if (/^59/.test(firstSic)) return 'retail';
+    if (/^73/.test(firstSic)) return 'business services';
+    if (/^80/.test(firstSic)) return 'healthcare';
+
+    return null;
 }
 
 function normalizeDomainArray(value: unknown): string[] {
@@ -419,6 +547,18 @@ function resolveOrganizationDomains(body: LeadSearchRequest): string[] {
 
     const domains = values.flatMap((value) => normalizeDomainArray(value));
     return Array.from(new Set(domains));
+}
+
+function resolveEmployeeRanges(body: LeadSearchRequest): string[] {
+    const values = [
+        body.employee_ranges,
+        body.employeeRanges,
+        body.employee_range,
+        body.employeeRange,
+    ];
+
+    const ranges = values.flatMap((value) => normalizeFlexibleStringArray(value));
+    return Array.from(new Set(ranges));
 }
 
 function candidateMatchesAnyDomain(candidate: OrganizationCandidate, domains: string[]): boolean {
@@ -481,6 +621,144 @@ function resolveSelectedOrganizationId(body: LeadSearchRequest): string {
     return value.trim();
 }
 
+function resolveSelectedOrganizationRequest(
+    body: LeadSearchRequest,
+    fallbackCompanyName: string
+): SelectedOrganizationRequest | null {
+    const id = resolveSelectedOrganizationId(body);
+    if (!id) return null;
+
+    const name = normalizeOptionalString(
+        body.selected_organization_name ?? body.selectedOrganizationName ?? fallbackCompanyName
+    );
+    const domain = normalizeOptionalString(
+        body.selected_organization_domain ?? body.selectedOrganizationDomain
+    );
+    const website = normalizeOptionalString(
+        body.selected_organization_website ?? body.selectedOrganizationWebsite
+    );
+
+    return {
+        id,
+        name,
+        primary_domain: domain ? normalizeDomain(domain) : null,
+        website_url: website,
+        industry: normalizeOptionalString(
+            body.selected_organization_industry ?? body.selectedOrganizationIndustry
+        ),
+        estimated_num_employees: parseOptionalNumberish(
+            body.selected_organization_size ?? body.selectedOrganizationSize
+        ),
+    };
+}
+
+function toOrganizationCandidateFromSelectedRequest(
+    selectedOrganization: SelectedOrganizationRequest
+): OrganizationCandidate {
+    return {
+        id: selectedOrganization.id,
+        name: selectedOrganization.name || 'Selected organization',
+        primary_domain: selectedOrganization.primary_domain,
+        website_url: selectedOrganization.website_url,
+        linkedin_url: null,
+        industry: selectedOrganization.industry,
+        estimated_num_employees: selectedOrganization.estimated_num_employees,
+        city: null,
+        state: null,
+        country: null,
+        match_score: selectedOrganization.name ? 100 : 0,
+    };
+}
+
+function mergeOrganizationCandidate(
+    base: OrganizationCandidate,
+    overlay: Partial<OrganizationCandidate> | null | undefined
+): OrganizationCandidate {
+    if (!overlay) return base;
+
+    return {
+        id: overlay.id || base.id,
+        name: overlay.name || base.name,
+        primary_domain: overlay.primary_domain || base.primary_domain,
+        website_url: overlay.website_url || base.website_url,
+        linkedin_url: overlay.linkedin_url || base.linkedin_url,
+        industry: overlay.industry || base.industry,
+        estimated_num_employees:
+            normalizeOptionalNumber(overlay.estimated_num_employees) ?? base.estimated_num_employees,
+        city: overlay.city || base.city,
+        state: overlay.state || base.state,
+        country: overlay.country || base.country,
+        match_score: Math.max(base.match_score, normalizeOptionalNumber(overlay.match_score) ?? 0),
+    };
+}
+
+function mergeApolloCompanyWithCandidate(
+    company: ApolloCompany,
+    candidate: OrganizationCandidate
+): ApolloCompany {
+    const preferCandidatePrimaryDomain =
+        !normalizeDomain(company.primary_domain || '') ||
+        isLowSignalOrganizationDomain(company.primary_domain || '');
+    const preferCandidateWebsite =
+        !normalizeDomain(company.website_url || '') ||
+        isLowSignalOrganizationDomain(company.website_url || '');
+
+    return {
+        ...company,
+        id: company.id || candidate.id,
+        name: company.name || candidate.name,
+        primary_domain: preferCandidatePrimaryDomain
+            ? candidate.primary_domain || company.primary_domain || ''
+            : company.primary_domain || candidate.primary_domain || '',
+        website_url: preferCandidateWebsite
+            ? candidate.website_url || company.website_url || undefined
+            : company.website_url || candidate.website_url || undefined,
+        linkedin_url: company.linkedin_url || candidate.linkedin_url || undefined,
+        industry: company.industry || candidate.industry || undefined,
+        estimated_num_employees:
+            normalizeOptionalNumber(company.estimated_num_employees) ??
+            candidate.estimated_num_employees ??
+            undefined,
+        city: company.city || candidate.city || undefined,
+        state: company.state || candidate.state || undefined,
+        country: company.country || candidate.country || undefined,
+    };
+}
+
+function pickMatchingOrganizationCandidate(
+    candidates: OrganizationCandidate[],
+    target: Pick<OrganizationCandidate, 'id' | 'name' | 'primary_domain'>
+): OrganizationCandidate | null {
+    if (candidates.length === 0) return null;
+
+    const normalizedTargetId = normalizeOptionalString(target.id);
+    const normalizedTargetDomain = normalizeDomain(target.primary_domain || '');
+    const normalizedTargetName = normalizeCompanyToken(target.name || '');
+
+    if (normalizedTargetId) {
+        const exactIdMatch = candidates.find((candidate) => candidate.id === normalizedTargetId);
+        if (exactIdMatch) return exactIdMatch;
+    }
+
+    if (normalizedTargetDomain) {
+        const exactDomainMatch = candidates.find((candidate) => {
+            const primaryDomain = normalizeDomain(candidate.primary_domain || '');
+            const websiteDomain = normalizeDomain(candidate.website_url || '');
+            return primaryDomain === normalizedTargetDomain || websiteDomain === normalizedTargetDomain;
+        });
+        if (exactDomainMatch) return exactDomainMatch;
+    }
+
+    if (normalizedTargetName) {
+        const exactNameMatch = candidates.find(
+            (candidate) => normalizeCompanyToken(candidate.name) === normalizedTargetName
+        );
+        if (exactNameMatch) return exactNameMatch;
+    }
+
+    return candidates[0] || null;
+}
+
 function resolveIncludeSimilarTitles(body: LeadSearchRequest, searchMode: SearchMode): boolean | undefined {
     const explicit = parseBooleanFlag(body.include_similar_titles ?? body.includeSimilarTitles);
     if (explicit !== null) return explicit;
@@ -501,14 +779,34 @@ function toOrganizationCandidate(
     const name = (company?.name || '').toString().trim();
     if (!id || !name) return null;
 
-    const primaryDomain = typeof company?.primary_domain === 'string' ? company.primary_domain.trim() : null;
-    const websiteUrl = typeof company?.website_url === 'string' ? company.website_url.trim() : null;
+    const rawPrimaryDomain = typeof company?.primary_domain === 'string' ? company.primary_domain.trim() : null;
+    const rawWebsiteUrl = typeof company?.website_url === 'string' ? company.website_url.trim() : null;
+    const ownerWebsiteUrl =
+        typeof company?.owned_by_organization?.website_url === 'string'
+            ? company.owned_by_organization.website_url.trim()
+            : null;
+    const ownerPrimaryDomain =
+        typeof company?.owned_by_organization?.primary_domain === 'string'
+            ? company.owned_by_organization.primary_domain.trim()
+            : null;
+    const ownerDomain = normalizeDomain(ownerPrimaryDomain || ownerWebsiteUrl || '');
+    const normalizedRawPrimaryDomain = normalizeDomain(rawPrimaryDomain || '');
+    const shouldReplacePrimaryDomain = !normalizedRawPrimaryDomain || isLowSignalOrganizationDomain(normalizedRawPrimaryDomain);
+    const primaryDomain = shouldReplacePrimaryDomain && ownerDomain
+        ? ownerDomain
+        : rawPrimaryDomain;
+    const websiteUrl = (shouldReplacePrimaryDomain && ownerWebsiteUrl) || rawWebsiteUrl;
     const linkedinUrl = typeof company?.linkedin_url === 'string' ? company.linkedin_url.trim() : null;
-    const industry = typeof company?.industry === 'string' ? company.industry.trim() : null;
+    const industry =
+        normalizeOptionalString(company?.industry) ||
+        normalizeOptionalString(company?.owned_by_organization?.industry) ||
+        inferIndustryFromClassificationCodes(company);
     const city = typeof company?.city === 'string' ? company.city.trim() : null;
     const state = typeof company?.state === 'string' ? company.state.trim() : null;
     const country = typeof company?.country === 'string' ? company.country.trim() : null;
-    const employees = typeof company?.estimated_num_employees === 'number' ? company.estimated_num_employees : null;
+    const employees =
+        normalizeOptionalNumber(company?.estimated_num_employees) ||
+        normalizeOptionalNumber(company?.owned_by_organization?.estimated_num_employees);
 
     const normalizedQuery = normalizeCompanyToken(companyNameQuery);
     const normalizedName = normalizeCompanyToken(name);
@@ -984,12 +1282,21 @@ export async function POST(req: Request) {
             selectedOrganizationName,
             selected_organization_domain,
             selectedOrganizationDomain,
+            selected_organization_website,
+            selectedOrganizationWebsite,
+            selected_organization_industry,
+            selectedOrganizationIndustry,
+            selected_organization_size,
+            selectedOrganizationSize,
             industry_keywords,
             company_keyword_tags,
             company_location,
             titles,
             seniorities,
             employee_ranges,
+            employeeRanges,
+            employee_range,
+            employeeRange,
             max_results = 100,
             companies_only = false,
             resume_search_progress,
@@ -1033,12 +1340,25 @@ export async function POST(req: Request) {
             companyDomain,
             selected_organization_id,
             selectedOrganizationId,
+            selected_organization_name,
+            selectedOrganizationName,
+            selected_organization_domain,
+            selectedOrganizationDomain,
+            selected_organization_website,
+            selectedOrganizationWebsite,
+            selected_organization_industry,
+            selectedOrganizationIndustry,
+            selected_organization_size,
+            selectedOrganizationSize,
             industry_keywords,
             company_keyword_tags,
             company_location,
             titles,
             seniorities,
             employee_ranges,
+            employeeRanges,
+            employee_range,
+            employeeRange,
             max_results,
             companies_only,
         });
@@ -1056,10 +1376,12 @@ export async function POST(req: Request) {
         const includeSimilarTitles = resolveIncludeSimilarTitles(body, resolvedSearchMode);
         const normalizedTitles = normalizeStringArray(titles);
         const normalizedSeniorities = normalizeStringArray(seniorities);
+        const normalizedEmployeeRanges = resolveEmployeeRanges(body);
 
         const normalizedCompanyName = normalizeCompanyName(company_name || companyName || '');
         const normalizedOrganizationDomains = resolveOrganizationDomains(body);
         const explicitSelectedOrganizationId = resolveSelectedOrganizationId(body);
+        const selectedOrganizationRequest = resolveSelectedOrganizationRequest(body, normalizedCompanyName);
         const shouldResumeSearchProgress = parseBooleanFlag(
             resume_search_progress ?? resumeSearchProgress
         ) === true;
@@ -1077,6 +1399,9 @@ export async function POST(req: Request) {
         }
 
         const batchRunId = uuidv4();
+        const organizationHydrationCache: OrganizationHydrationCache = {
+            byDomain: new Map<string, OrganizationCandidate | null>(),
+        };
         const requestOrigin = resolveRequestPublicOrigin(req);
 
         log(`Starting batch run: ${batchRunId} for user: ${user_id}`);
@@ -1093,6 +1418,21 @@ export async function POST(req: Request) {
             include_similar_titles: includeSimilarTitles,
             resume_search_progress: shouldResumeSearchProgress,
             request_origin: requestOrigin,
+        });
+        log('Applied Search Filters:', {
+            titles: normalizedTitles,
+            seniorities: normalizedSeniorities,
+            organization_num_employees_ranges: normalizedEmployeeRanges,
+            company_keyword_tags: (company_keyword_tags && company_keyword_tags.length > 0
+                ? company_keyword_tags
+                : industry_keywords
+            )
+                ?.map((tag) => tag?.trim())
+                .filter((tag): tag is string => Boolean(tag)) || [],
+            organization_locations: company_location
+                ?.map((location) => location?.trim())
+                .filter((location): location is string => Boolean(location)) || [],
+            selected_organization: selectedOrganizationRequest,
         });
 
         if (
@@ -1111,26 +1451,16 @@ export async function POST(req: Request) {
             let organizationCandidates: OrganizationCandidate[] = [];
 
             if (explicitSelectedOrganizationId) {
-                const selectedOrgName = normalizeCompanyName(
-                    selected_organization_name || selectedOrganizationName || normalizedCompanyName || ''
+                selectedOrganization = toOrganizationCandidateFromSelectedRequest(
+                    selectedOrganizationRequest || {
+                        id: explicitSelectedOrganizationId,
+                        name: normalizeOptionalString(normalizedCompanyName),
+                        primary_domain: null,
+                        website_url: null,
+                        industry: null,
+                        estimated_num_employees: null,
+                    }
                 );
-                const selectedOrgDomain = normalizeCompanyName(
-                    selected_organization_domain || selectedOrganizationDomain || ''
-                );
-
-                selectedOrganization = {
-                    id: explicitSelectedOrganizationId,
-                    name: selectedOrgName || 'Selected organization',
-                    primary_domain: selectedOrgDomain || null,
-                    website_url: null,
-                    linkedin_url: null,
-                    industry: null,
-                    estimated_num_employees: null,
-                    city: null,
-                    state: null,
-                    country: null,
-                    match_score: selectedOrgName ? 100 : 0,
-                };
 
                 organizationCandidates = [selectedOrganization];
             } else {
@@ -1175,6 +1505,11 @@ export async function POST(req: Request) {
                         organization_candidates: [],
                         leads_count: 0,
                         leads: [],
+                        missing_organization_id_count: 0,
+                        missing_organization_domain_count: 0,
+                        missing_organization_industry_count: 0,
+                        missing_email_count: 0,
+                        warnings: [],
                         debug_logs: debugLogs,
                     });
                 }
@@ -1194,6 +1529,11 @@ export async function POST(req: Request) {
                         organization_candidates: organizationCandidates,
                         leads_count: 0,
                         leads: [],
+                        missing_organization_id_count: 0,
+                        missing_organization_domain_count: 0,
+                        missing_organization_industry_count: 0,
+                        missing_email_count: 0,
+                        warnings: [],
                         debug_logs: debugLogs,
                     });
                 }
@@ -1211,6 +1551,18 @@ export async function POST(req: Request) {
                 );
             }
 
+            selectedOrganization = await hydrateOrganizationCandidate(
+                apiKey,
+                selectedOrganization,
+                log,
+                organizationHydrationCache
+            );
+            organizationCandidates = organizationCandidates.map((candidate) =>
+                candidate.id === selectedOrganization?.id
+                    ? mergeOrganizationCandidate(candidate, selectedOrganization)
+                    : candidate
+            );
+
             log('Selected organization for company search mode', selectedOrganization);
 
             const leads = await fetchPeople(
@@ -1225,9 +1577,15 @@ export async function POST(req: Request) {
                 log
             );
 
-            const savedLeads = await saveToSupabase(dbClient, leads, batchRunId, log, {
+            const hydratedLeads = applyOrganizationContextToLeads(leads, [selectedOrganization]);
+
+            const savedLeads = await saveToSupabase(dbClient, hydratedLeads, batchRunId, log, {
                 defaultOrganization: toOrganizationFallbackFromCandidate(selectedOrganization),
             });
+            const sparseLeadSummary = summarizeSparseLeads(savedLeads);
+            if (sparseLeadSummary.warnings.length > 0) {
+                log('Sparse lead warnings', sparseLeadSummary);
+            }
 
             return NextResponse.json({
                 batch_run_id: batchRunId,
@@ -1239,6 +1597,7 @@ export async function POST(req: Request) {
                 includes_similar_titles: includeSimilarTitles,
                 leads_count: savedLeads.length,
                 leads: savedLeads,
+                ...sparseLeadSummary,
                 debug_logs: debugLogs,
             });
         }
@@ -1458,7 +1817,9 @@ export async function POST(req: Request) {
         log('Resolved Company Filters:', {
             company_keyword_tags: normalizedKeywordTags,
             organization_locations: normalizedLocations,
-            organization_num_employees_ranges: employee_ranges,
+            organization_num_employees_ranges: normalizedEmployeeRanges,
+            person_titles: normalizedTitles,
+            person_seniorities: normalizedSeniorities,
             companies_only,
         });
 
@@ -1468,7 +1829,7 @@ export async function POST(req: Request) {
             search_mode: resolvedSearchMode,
             company_keyword_tags: normalizedKeywordTags,
             company_location: normalizedLocations,
-            employee_ranges,
+            employee_ranges: normalizedEmployeeRanges,
             titles: normalizedTitles,
             seniorities: normalizedSeniorities,
             include_similar_titles: includeSimilarTitles,
@@ -1506,15 +1867,39 @@ export async function POST(req: Request) {
         // --- Pagination Logic End ---
 
         // Step 1: Search Companies
-        const { companies, lastPageFetched } = await fetchCompanies(apiKey, {
+        const { companies: rawCompanies, lastPageFetched } = await fetchCompanies(apiKey, {
             company_keyword_tags: normalizedKeywordTags,
             company_location: normalizedLocations,
-            employee_ranges,
+            employee_ranges: normalizedEmployeeRanges,
             max_results,
             start_page: startPage
         }, log);
 
+        const companyCandidates = rawCompanies
+            .map((company) => toOrganizationCandidate(company, company.name || ''))
+            .filter((candidate: OrganizationCandidate | null): candidate is OrganizationCandidate => Boolean(candidate));
+        const hydratedCompanyCandidates = await hydrateOrganizationCandidates(
+            apiKey,
+            companyCandidates,
+            log,
+            organizationHydrationCache
+        );
+        const hydratedCompanyCandidatesById = new Map(
+            hydratedCompanyCandidates.map((candidate) => [candidate.id, candidate])
+        );
+        const companies = rawCompanies.map((company) => {
+            const hydratedCandidate = hydratedCompanyCandidatesById.get(company.id);
+            return hydratedCandidate
+                ? mergeApolloCompanyWithCandidate(company, hydratedCandidate)
+                : company;
+        });
+
         log(`Found ${companies.length} companies.`);
+        log('Hydrated batch organization metadata:', {
+            companies_with_domain: companies.filter((company) => normalizeDomain(company.primary_domain || company.website_url || '')).length,
+            companies_with_industry: companies.filter((company) => normalizeOptionalString(company.industry)).length,
+            companies_with_size: companies.filter((company) => normalizeOptionalNumber(company.estimated_num_employees)).length,
+        });
 
         // Update Progress if we fetched anything
         if (shouldResumeSearchProgress && lastPageFetched >= startPage) {
@@ -1542,6 +1927,11 @@ export async function POST(req: Request) {
                 companies: [],
                 leads_count: 0,
                 leads: [],
+                missing_organization_id_count: 0,
+                missing_organization_domain_count: 0,
+                missing_organization_industry_count: 0,
+                missing_email_count: 0,
+                warnings: [],
                 debug_logs: debugLogs,
             });
         }
@@ -1580,13 +1970,16 @@ export async function POST(req: Request) {
             if (allLeads.length >= max_results) break;
 
             const remaining = max_results - allLeads.length;
+            const chunkOrganizations = chunk
+                .map((organizationId) => hydratedCompanyCandidatesById.get(organizationId))
+                .filter((candidate): candidate is OrganizationCandidate => Boolean(candidate));
             const leads = await fetchPeople(apiKey, chunk, {
                 titles: normalizedTitles,
                 seniorities: normalizedSeniorities,
                 include_similar_titles: includeSimilarTitles,
                 max_results: remaining,
             }, log);
-            allLeads = [...allLeads, ...leads];
+            allLeads = [...allLeads, ...applyOrganizationContextToLeads(leads, chunkOrganizations)];
         }
 
         log(`Found ${allLeads.length} leads.`);
@@ -1595,12 +1988,17 @@ export async function POST(req: Request) {
         const savedLeads = await saveToSupabase(dbClient, allLeads, batchRunId, log, {
             organizationsById: buildOrganizationFallbackMap(companies),
         });
+        const sparseLeadSummary = summarizeSparseLeads(savedLeads);
+        if (sparseLeadSummary.warnings.length > 0) {
+            log('Sparse lead warnings', sparseLeadSummary);
+        }
 
         return NextResponse.json({
             batch_run_id: batchRunId,
             search_mode: resolvedSearchMode,
             leads_count: savedLeads.length,
             leads: savedLeads,
+            ...sparseLeadSummary,
             debug_logs: debugLogs,
         });
     } catch (error: any) {
@@ -1683,6 +2081,256 @@ async function fetchOrganizationCandidatesByName(
         log('Error searching organizations by company name:', error?.message || error);
         return [];
     }
+}
+
+async function fetchOrganizationCandidateByDomain(
+    apiKey: string,
+    domain: string,
+    companyName: string,
+    log: (msg: string, data?: any) => void
+): Promise<OrganizationCandidate | null> {
+    const normalizedDomain = normalizeDomain(domain);
+    if (!normalizedDomain) return null;
+
+    const candidates = await fetchOrganizationCandidatesByDomains(
+        apiKey,
+        [normalizedDomain],
+        companyName,
+        log
+    );
+
+    if (candidates.length === 0) return null;
+
+    return (
+        candidates.find((candidate) => candidateMatchesAnyDomain(candidate, [normalizedDomain])) ||
+        candidates[0] ||
+        null
+    );
+}
+
+async function hydrateOrganizationCandidate(
+    apiKey: string,
+    candidate: OrganizationCandidate,
+    log: (msg: string, data?: any) => void,
+    cache: OrganizationHydrationCache
+): Promise<OrganizationCandidate> {
+    if (candidate.industry && candidate.primary_domain && candidate.estimated_num_employees) {
+        return candidate;
+    }
+
+    let resolvedCandidate = candidate;
+    let normalizedDomain = normalizeDomain(candidate.primary_domain || candidate.website_url || '');
+
+    if (!normalizedDomain && candidate.name) {
+        const nameCandidates = await fetchOrganizationCandidatesByName(
+            apiKey,
+            candidate.name,
+            [],
+            log
+        );
+        const nameMatch = pickMatchingOrganizationCandidate(nameCandidates, candidate);
+        if (nameMatch) {
+            resolvedCandidate = mergeOrganizationCandidate(resolvedCandidate, nameMatch);
+            normalizedDomain = normalizeDomain(
+                resolvedCandidate.primary_domain || resolvedCandidate.website_url || ''
+            );
+        }
+    }
+
+    let hydratedCandidate: OrganizationCandidate | null = null;
+
+    if (normalizedDomain) {
+        if (!cache.byDomain.has(normalizedDomain)) {
+            cache.byDomain.set(
+                normalizedDomain,
+                await fetchOrganizationCandidateByDomain(apiKey, normalizedDomain, resolvedCandidate.name, log)
+            );
+        }
+
+        hydratedCandidate = cache.byDomain.get(normalizedDomain) || null;
+    }
+
+    const needsMoreMetadata = !hydratedCandidate || !hydratedCandidate.industry || !hydratedCandidate.estimated_num_employees;
+
+    if (needsMoreMetadata && resolvedCandidate.name) {
+        const nameCandidates = await fetchOrganizationCandidatesByName(
+            apiKey,
+            resolvedCandidate.name,
+            normalizedDomain ? [normalizedDomain] : [],
+            log
+        );
+        const nameMatch = pickMatchingOrganizationCandidate(nameCandidates, resolvedCandidate);
+        if (nameMatch) {
+            hydratedCandidate = hydratedCandidate
+                ? mergeOrganizationCandidate(hydratedCandidate, nameMatch)
+                : nameMatch;
+        }
+    }
+
+    return mergeOrganizationCandidate(resolvedCandidate, hydratedCandidate);
+}
+
+async function hydrateOrganizationCandidates(
+    apiKey: string,
+    candidates: OrganizationCandidate[],
+    log: (msg: string, data?: any) => void,
+    cache: OrganizationHydrationCache
+): Promise<OrganizationCandidate[]> {
+    const hydrated: OrganizationCandidate[] = [];
+
+    const concurrency = 5;
+    for (let index = 0; index < candidates.length; index += concurrency) {
+        const slice = candidates.slice(index, index + concurrency);
+        const sliceResults = await Promise.all(
+            slice.map((candidate) => hydrateOrganizationCandidate(apiKey, candidate, log, cache))
+        );
+        hydrated.push(...sliceResults);
+    }
+
+    return hydrated;
+}
+
+function applyOrganizationContextToLeads(
+    leads: ApolloPerson[],
+    organizations: OrganizationCandidate[]
+): ApolloPerson[] {
+    if (leads.length === 0 || organizations.length === 0) return leads;
+
+    const organizationsById = new Map<string, OrganizationCandidate>();
+    const organizationsByDomain = new Map<string, OrganizationCandidate>();
+    const organizationsByName = new Map<string, OrganizationCandidate>();
+
+    for (const organization of organizations) {
+        organizationsById.set(organization.id, organization);
+
+        const primaryDomain = normalizeDomain(organization.primary_domain || '');
+        if (primaryDomain && !organizationsByDomain.has(primaryDomain)) {
+            organizationsByDomain.set(primaryDomain, organization);
+        }
+
+        const websiteDomain = normalizeDomain(organization.website_url || '');
+        if (websiteDomain && !organizationsByDomain.has(websiteDomain)) {
+            organizationsByDomain.set(websiteDomain, organization);
+        }
+
+        const normalizedName = normalizeCompanyToken(organization.name || '');
+        if (normalizedName && !organizationsByName.has(normalizedName)) {
+            organizationsByName.set(normalizedName, organization);
+        }
+    }
+
+    return leads.map((lead) => {
+        const normalizedLeadOrganizationId = normalizeOptionalString(
+            lead.organization?.id || lead.organization_id
+        );
+        const normalizedLeadDomain = normalizeDomain(
+            (lead.organization?.primary_domain || lead.organization_domain || lead.organization?.website_url || lead.organization_website || '')
+        );
+        const normalizedLeadName = normalizeCompanyToken(
+            lead.organization?.name || lead.organization_name || ''
+        );
+
+        const matchedOrganization =
+            (normalizedLeadOrganizationId ? organizationsById.get(normalizedLeadOrganizationId) : null) ||
+            (normalizedLeadDomain ? organizationsByDomain.get(normalizedLeadDomain) : null) ||
+            (normalizedLeadName ? organizationsByName.get(normalizedLeadName) : null) ||
+            (organizations.length === 1 ? organizations[0] : null);
+
+        if (!matchedOrganization) return lead;
+
+        return {
+            ...lead,
+            organization_id:
+                normalizeOptionalString(lead.organization_id || lead.organization?.id) ||
+                matchedOrganization.id,
+            organization_name:
+                normalizeOptionalString(lead.organization_name) ||
+                normalizeOptionalString(lead.organization?.name) ||
+                matchedOrganization.name,
+            organization_domain:
+                normalizeOptionalString(lead.organization_domain) ||
+                normalizeOptionalString(lead.organization?.primary_domain) ||
+                matchedOrganization.primary_domain,
+            organization_website:
+                normalizeOptionalString(lead.organization_website) ||
+                normalizeOptionalString(lead.organization?.website_url) ||
+                matchedOrganization.website_url,
+            organization_industry:
+                normalizeOptionalString(lead.organization_industry) ||
+                normalizeOptionalString(lead.organization?.industry) ||
+                matchedOrganization.industry,
+            organization_size:
+                normalizeOptionalNumber(lead.organization_size) ||
+                normalizeOptionalNumber(lead.organization?.estimated_num_employees) ||
+                matchedOrganization.estimated_num_employees,
+            industry:
+                normalizeOptionalString((lead as any).industry) ||
+                normalizeOptionalString(lead.organization_industry) ||
+                normalizeOptionalString(lead.organization?.industry) ||
+                matchedOrganization.industry,
+            organization: {
+                ...(lead.organization || {}),
+                id: normalizeOptionalString(lead.organization?.id) || matchedOrganization.id,
+                name: normalizeOptionalString(lead.organization?.name) || matchedOrganization.name,
+                primary_domain:
+                    normalizeOptionalString(lead.organization?.primary_domain) ||
+                    matchedOrganization.primary_domain,
+                website_url:
+                    normalizeOptionalString(lead.organization?.website_url) ||
+                    matchedOrganization.website_url,
+                industry:
+                    normalizeOptionalString(lead.organization?.industry) || matchedOrganization.industry,
+                estimated_num_employees:
+                    normalizeOptionalNumber(lead.organization?.estimated_num_employees) ||
+                    matchedOrganization.estimated_num_employees,
+            },
+        };
+    });
+}
+
+function summarizeSparseLeads(leads: any[]): SparseLeadSummary {
+    const summary: SparseLeadSummary = {
+        missing_organization_id_count: 0,
+        missing_organization_domain_count: 0,
+        missing_organization_industry_count: 0,
+        missing_email_count: 0,
+        warnings: [],
+    };
+
+    const total = Array.isArray(leads) ? leads.length : 0;
+    if (total === 0) return summary;
+
+    for (const lead of leads) {
+        if (!normalizeOptionalString(lead?.organization_id)) {
+            summary.missing_organization_id_count++;
+        }
+
+        if (!normalizeOptionalString(lead?.organization_domain || lead?.organization?.primary_domain)) {
+            summary.missing_organization_domain_count++;
+        }
+
+        if (!normalizeOptionalString(lead?.organization_industry || lead?.organization?.industry)) {
+            summary.missing_organization_industry_count++;
+        }
+
+        if (!normalizeEmail(lead?.email)) {
+            summary.missing_email_count++;
+        }
+    }
+
+    const sparseWarnings: Array<[number, string]> = [
+        [summary.missing_organization_id_count, 'organization_id'],
+        [summary.missing_organization_domain_count, 'organization_domain'],
+        [summary.missing_organization_industry_count, 'organization_industry'],
+        [summary.missing_email_count, 'email'],
+    ];
+
+    for (const [count, label] of sparseWarnings) {
+        if (count <= 0) continue;
+        summary.warnings.push(`Sparse lead coverage: ${count}/${total} leads are missing ${label}.`);
+    }
+
+    return summary;
 }
 
 async function fetchPersonByLinkedInUrl(

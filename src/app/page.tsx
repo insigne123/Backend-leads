@@ -23,6 +23,8 @@ interface OrganizationCandidate {
   name: string;
   primary_domain?: string | null;
   website_url?: string | null;
+  industry?: string | null;
+  estimated_num_employees?: number | null;
   match_score?: number;
 }
 
@@ -250,6 +252,11 @@ export default function Home() {
           const selectedOrg = organizationCandidates.find((candidate) => candidate.id === selectedOrganizationId);
           if (selectedOrg?.name) payload.selected_organization_name = selectedOrg.name;
           if (selectedOrg?.primary_domain) payload.selected_organization_domain = selectedOrg.primary_domain;
+          if (selectedOrg?.website_url) payload.selected_organization_website = selectedOrg.website_url;
+          if (selectedOrg?.industry) payload.selected_organization_industry = selectedOrg.industry;
+          if (typeof selectedOrg?.estimated_num_employees === 'number') {
+            payload.selected_organization_size = selectedOrg.estimated_num_employees;
+          }
         }
       } else {
         payload.industry_keywords = parseCommaList(industryKeywords);
