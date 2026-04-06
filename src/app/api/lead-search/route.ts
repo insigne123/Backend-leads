@@ -48,6 +48,8 @@ interface LeadSearchRequest {
     employee_ranges?: string[];
     max_results?: number;
     companies_only?: boolean;
+    resume_search_progress?: boolean | string | number;
+    resumeSearchProgress?: boolean | string | number;
 }
 
 // Apollo API Types (Simplified)
@@ -72,9 +74,19 @@ interface ApolloPerson {
     email?: string;
     linkedin_url?: string;
     organization?: {
+        id?: string;
         name?: string;
+        primary_domain?: string;
+        website_url?: string;
+        industry?: string;
+        estimated_num_employees?: number;
     };
+    organization_id?: string;
     organization_name?: string;
+    organization_domain?: string;
+    organization_website?: string;
+    organization_industry?: string;
+    organization_size?: number;
     title?: string;
 }
 
@@ -113,6 +125,15 @@ type OrganizationCandidate = {
     state: string | null;
     country: string | null;
     match_score: number;
+};
+
+type OrganizationFallback = {
+    id: string | null;
+    name: string | null;
+    primary_domain: string | null;
+    website_url: string | null;
+    industry: string | null;
+    estimated_num_employees: number | null;
 };
 
 function getServerSupabase(log?: (msg: string, data?: any) => void) {
@@ -305,6 +326,10 @@ function normalizeOptionalString(value: unknown): string | null {
     return trimmed || null;
 }
 
+function normalizeOptionalNumber(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function resolvePrimaryPhoneFromLead(lead: any): string | null {
     if (typeof lead?.primary_phone === 'string' && lead.primary_phone.trim()) {
         return lead.primary_phone.trim();
@@ -408,6 +433,42 @@ function candidateMatchesAnyDomain(candidate: OrganizationCandidate, domains: st
 function normalizeCompanyName(value: unknown): string {
     if (typeof value !== 'string') return '';
     return value.trim();
+}
+
+function toOrganizationFallback(
+    value: Pick<ApolloCompany, 'id' | 'name' | 'primary_domain' | 'website_url' | 'industry' | 'estimated_num_employees'>
+): OrganizationFallback {
+    return {
+        id: normalizeOptionalString(value.id),
+        name: normalizeOptionalString(value.name),
+        primary_domain: normalizeOptionalString(value.primary_domain),
+        website_url: normalizeOptionalString(value.website_url),
+        industry: normalizeOptionalString(value.industry),
+        estimated_num_employees: normalizeOptionalNumber(value.estimated_num_employees),
+    };
+}
+
+function toOrganizationFallbackFromCandidate(candidate: OrganizationCandidate): OrganizationFallback {
+    return {
+        id: normalizeOptionalString(candidate.id),
+        name: normalizeOptionalString(candidate.name),
+        primary_domain: normalizeOptionalString(candidate.primary_domain),
+        website_url: normalizeOptionalString(candidate.website_url),
+        industry: normalizeOptionalString(candidate.industry),
+        estimated_num_employees: normalizeOptionalNumber(candidate.estimated_num_employees),
+    };
+}
+
+function buildOrganizationFallbackMap(companies: ApolloCompany[]): Map<string, OrganizationFallback> {
+    const map = new Map<string, OrganizationFallback>();
+
+    for (const company of companies) {
+        const fallback = toOrganizationFallback(company);
+        if (!fallback.id) continue;
+        map.set(fallback.id, fallback);
+    }
+
+    return map;
 }
 
 function normalizeCompanyToken(value: string): string {
@@ -931,6 +992,8 @@ export async function POST(req: Request) {
             employee_ranges,
             max_results = 100,
             companies_only = false,
+            resume_search_progress,
+            resumeSearchProgress,
         } = body;
 
         if (!user_id) {
@@ -997,6 +1060,9 @@ export async function POST(req: Request) {
         const normalizedCompanyName = normalizeCompanyName(company_name || companyName || '');
         const normalizedOrganizationDomains = resolveOrganizationDomains(body);
         const explicitSelectedOrganizationId = resolveSelectedOrganizationId(body);
+        const shouldResumeSearchProgress = parseBooleanFlag(
+            resume_search_progress ?? resumeSearchProgress
+        ) === true;
 
         if (resolvedSearchMode === 'linkedin_profile') {
             const linkedInUrlRaw = linkedin_url || linkedin_profile_url || linkedinUrl || linkedinProfileUrl || '';
@@ -1025,6 +1091,7 @@ export async function POST(req: Request) {
             organization_domains: normalizedOrganizationDomains,
             selected_organization_id: explicitSelectedOrganizationId || null,
             include_similar_titles: includeSimilarTitles,
+            resume_search_progress: shouldResumeSearchProgress,
             request_origin: requestOrigin,
         });
 
@@ -1158,7 +1225,9 @@ export async function POST(req: Request) {
                 log
             );
 
-            const savedLeads = await saveToSupabase(dbClient, leads, batchRunId, log);
+            const savedLeads = await saveToSupabase(dbClient, leads, batchRunId, log, {
+                defaultOrganization: toOrganizationFallbackFromCandidate(selectedOrganization),
+            });
 
             return NextResponse.json({
                 batch_run_id: batchRunId,
@@ -1396,10 +1465,13 @@ export async function POST(req: Request) {
         // --- Pagination Logic Start ---
         // 1. Generate Filter Hash
         const filtersForHash = {
+            search_mode: resolvedSearchMode,
             company_keyword_tags: normalizedKeywordTags,
             company_location: normalizedLocations,
             employee_ranges,
-            // We only hash company filters because that's what we paginate
+            titles: normalizedTitles,
+            seniorities: normalizedSeniorities,
+            include_similar_titles: includeSimilarTitles,
         };
         const filtersHash = crypto
             .createHash('md5')
@@ -1410,18 +1482,26 @@ export async function POST(req: Request) {
 
         // 2. Check Search Progress
         let startPage = 1;
-        const { data: progressData, error: progressError } = await dbClient
-            .from('search_progress')
-            .select('last_company_page')
-            .eq('user_id', user_id)
-            .eq('filters_hash', filtersHash)
-            .single();
+        if (shouldResumeSearchProgress) {
+            const { data: progressData, error: progressError } = await dbClient
+                .from('search_progress')
+                .select('last_company_page')
+                .eq('user_id', user_id)
+                .eq('filters_hash', filtersHash)
+                .maybeSingle();
 
-        if (progressData) {
-            startPage = progressData.last_company_page + 1;
-            log(`Found previous progress. Resuming from Company Page ${startPage}`);
+            if (progressError) {
+                log('Warning: Failed to load previous search progress. Starting from Company Page 1.', {
+                    error: progressError.message,
+                });
+            } else if (progressData) {
+                startPage = progressData.last_company_page + 1;
+                log(`Found previous progress. Resuming from Company Page ${startPage}`);
+            } else {
+                log('No previous progress found. Starting from Company Page 1');
+            }
         } else {
-            log('No previous progress found. Starting from Company Page 1');
+            log('Search progress resume disabled. Starting from Company Page 1');
         }
         // --- Pagination Logic End ---
 
@@ -1437,7 +1517,7 @@ export async function POST(req: Request) {
         log(`Found ${companies.length} companies.`);
 
         // Update Progress if we fetched anything
-        if (lastPageFetched >= startPage) {
+        if (shouldResumeSearchProgress && lastPageFetched >= startPage) {
             const { error: upsertError } = await dbClient
                 .from('search_progress')
                 .upsert({
@@ -1512,7 +1592,9 @@ export async function POST(req: Request) {
         log(`Found ${allLeads.length} leads.`);
 
         // Step 4: Persist to Supabase
-        const savedLeads = await saveToSupabase(dbClient, allLeads, batchRunId, log);
+        const savedLeads = await saveToSupabase(dbClient, allLeads, batchRunId, log, {
+            organizationsById: buildOrganizationFallbackMap(companies),
+        });
 
         return NextResponse.json({
             batch_run_id: batchRunId,
@@ -1877,7 +1959,11 @@ async function saveToSupabase(
     dbClient: any,
     leads: ApolloPerson[],
     batchRunId: string,
-    log: (msg: string, data?: any) => void
+    log: (msg: string, data?: any) => void,
+    options: {
+        organizationsById?: Map<string, OrganizationFallback>;
+        defaultOrganization?: OrganizationFallback | null;
+    } = {}
 ) {
     if (leads.length === 0) return [];
 
@@ -1890,7 +1976,7 @@ async function saveToSupabase(
     if (leadIds.length > 0) {
         const { data: existingRows, error: existingError } = await dbClient
             .from(LINKEDIN_PROFILE_TABLE_NAME)
-            .select('id, email, email_status, linkedin_url, phone_numbers, primary_phone, enrichment_status')
+            .select('id, email, email_status, linkedin_url, phone_numbers, primary_phone, enrichment_status, org_name, organization_name, organization_id, organization_website, industry, organization_domain, organization_industry, organization_size')
             .in('id', leadIds);
 
         if (existingError) {
@@ -1917,10 +2003,40 @@ async function saveToSupabase(
             const firstName = (lead.first_name || '').toString().trim();
             const lastName = (lead.last_name || lead.last_name_obfuscated || '').toString().trim();
             const fullName = `${firstName} ${lastName}`.trim() || null;
-            const organizationName = lead.organization?.name || lead.organization_name || null;
-            const organizationDomain = lead.organization?.primary_domain || lead.organization_domain || null;
-            const organizationIndustry = lead.organization?.industry || lead.organization_industry || null;
-            const organizationSize = lead.organization?.estimated_num_employees || lead.organization_size || null;
+            const leadOrganizationId = normalizeOptionalString(lead.organization?.id || lead.organization_id);
+            const shouldUseDefaultOrganization = Boolean(
+                options.defaultOrganization &&
+                (!leadOrganizationId || leadOrganizationId === options.defaultOrganization.id)
+            );
+            const fallbackOrganization =
+                (leadOrganizationId ? options.organizationsById?.get(leadOrganizationId) : null) ||
+                (shouldUseDefaultOrganization ? options.defaultOrganization || null : null);
+            const existingOrganizationName = normalizeOptionalString(existing?.organization_name || existing?.org_name);
+            const existingOrganizationId = normalizeOptionalString(existing?.organization_id);
+            const existingOrganizationWebsite = normalizeOptionalString(existing?.organization_website);
+            const existingOrganizationDomain = normalizeOptionalString(existing?.organization_domain);
+            const existingOrganizationIndustry = normalizeOptionalString(existing?.organization_industry || existing?.industry);
+            const organizationName =
+                normalizeOptionalString(lead.organization?.name || lead.organization_name) ||
+                fallbackOrganization?.name ||
+                existingOrganizationName;
+            const organizationId = leadOrganizationId || fallbackOrganization?.id || existingOrganizationId;
+            const organizationWebsite =
+                normalizeOptionalString(lead.organization?.website_url || lead.organization_website) ||
+                fallbackOrganization?.website_url ||
+                existingOrganizationWebsite;
+            const organizationDomain =
+                normalizeOptionalString(lead.organization?.primary_domain || lead.organization_domain) ||
+                fallbackOrganization?.primary_domain ||
+                existingOrganizationDomain;
+            const organizationIndustry =
+                normalizeOptionalString(lead.organization?.industry || lead.organization_industry) ||
+                fallbackOrganization?.industry ||
+                existingOrganizationIndustry;
+            const organizationSize =
+                normalizeOptionalNumber(lead.organization?.estimated_num_employees || lead.organization_size) ||
+                fallbackOrganization?.estimated_num_employees ||
+                normalizeOptionalNumber(existing?.organization_size);
             const nextEmail = normalizeEmail(lead.email);
             const existingEmail = normalizeEmail(existing?.email);
             const resolvedEmail = nextEmail || existingEmail;
@@ -1949,9 +2065,9 @@ async function saveToSupabase(
                 linkedin_url: nextLinkedInUrl || existingLinkedInUrl || '',
                 org_name: organizationName,
                 organization_name: organizationName,
-                organization_id: lead.organization?.id || lead.organization_id || null,
-                organization_website: lead.organization?.website_url || lead.organization_website || null,
-                industry: organizationIndustry || lead.industry || null,
+                organization_id: organizationId,
+                organization_website: organizationWebsite,
+                industry: organizationIndustry || normalizeOptionalString(lead.industry) || existingOrganizationIndustry,
                 title: lead.title || null,
                 photo_url: lead.photo_url || null,
                 city: lead.city || null,
