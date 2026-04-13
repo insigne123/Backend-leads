@@ -6,6 +6,13 @@ import crypto from 'crypto';
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_APOLLO_WEBHOOK_BASE_URL = process.env.APOLLO_WEBHOOK_BASE_URL?.trim() || '';
 const LINKEDIN_PROFILE_TABLE_NAME = 'people_search_leads';
+const MAX_LEAD_SEARCH_RESULTS = 50;
+const LEAD_SEARCH_CORS_HEADERS = {
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Max-Age': '86400',
+};
 
 type SearchMode = 'batch' | 'linkedin_profile' | 'company_name';
 
@@ -55,7 +62,7 @@ interface LeadSearchRequest {
     employeeRanges?: string[] | string;
     employee_range?: string[] | string;
     employeeRange?: string[] | string;
-    max_results?: number;
+    max_results?: number | string;
     companies_only?: boolean;
     resume_search_progress?: boolean | string | number;
     resumeSearchProgress?: boolean | string | number;
@@ -442,6 +449,13 @@ function parseOptionalNumberish(value: unknown): number | null {
 
     const parsed = Number(trimmed);
     return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveMaxResults(value: unknown): number {
+    const parsed = parseOptionalNumberish(value);
+    if (parsed === null) return MAX_LEAD_SEARCH_RESULTS;
+
+    return Math.min(Math.max(Math.floor(parsed), 1), MAX_LEAD_SEARCH_RESULTS);
 }
 
 function normalizeDomain(value: string): string {
@@ -1168,6 +1182,13 @@ async function fetchLeadSnapshot(
     return data || null;
 }
 
+export async function OPTIONS() {
+    return new NextResponse(null, {
+        status: 204,
+        headers: LEAD_SEARCH_CORS_HEADERS,
+    });
+}
+
 export async function GET(req: Request) {
     const url = new URL(req.url);
     const recordId =
@@ -1297,7 +1318,7 @@ export async function POST(req: Request) {
             employeeRanges,
             employee_range,
             employeeRange,
-            max_results = 100,
+            max_results = MAX_LEAD_SEARCH_RESULTS,
             companies_only = false,
             resume_search_progress,
             resumeSearchProgress,
@@ -1380,6 +1401,7 @@ export async function POST(req: Request) {
 
         const normalizedCompanyName = normalizeCompanyName(company_name || companyName || '');
         const normalizedOrganizationDomains = resolveOrganizationDomains(body);
+        const maxResults = resolveMaxResults(max_results);
         const explicitSelectedOrganizationId = resolveSelectedOrganizationId(body);
         const selectedOrganizationRequest = resolveSelectedOrganizationRequest(body, normalizedCompanyName);
         const shouldResumeSearchProgress = parseBooleanFlag(
@@ -1572,7 +1594,7 @@ export async function POST(req: Request) {
                     titles: normalizedTitles,
                     seniorities: normalizedSeniorities,
                     include_similar_titles: includeSimilarTitles,
-                    max_results,
+                    max_results: maxResults,
                 },
                 log
             );
@@ -1871,7 +1893,7 @@ export async function POST(req: Request) {
             company_keyword_tags: normalizedKeywordTags,
             company_location: normalizedLocations,
             employee_ranges: normalizedEmployeeRanges,
-            max_results,
+            max_results: maxResults,
             start_page: startPage
         }, log);
 
@@ -1967,9 +1989,9 @@ export async function POST(req: Request) {
         let allLeads: ApolloPerson[] = [];
 
         for (const chunk of idChunks) {
-            if (allLeads.length >= max_results) break;
+            if (allLeads.length >= maxResults) break;
 
-            const remaining = max_results - allLeads.length;
+            const remaining = maxResults - allLeads.length;
             const chunkOrganizations = chunk
                 .map((organizationId) => hydratedCompanyCandidatesById.get(organizationId))
                 .filter((candidate): candidate is OrganizationCandidate => Boolean(candidate));

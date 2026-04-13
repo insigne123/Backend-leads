@@ -1,3 +1,3 @@
 export const runtime = 'nodejs';
 
-export { GET, POST } from '@/app/api/lead-search/route';
+export { GET, OPTIONS, POST } from '@/app/api/lead-search/route';
