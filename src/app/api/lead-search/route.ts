@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { getServiceSupabase, supabase } from '@/lib/supabase';
 import { v4 as uuidv4 } from 'uuid';
+import { timingSafeEqual } from 'node:crypto';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_APOLLO_WEBHOOK_BASE_URL = process.env.APOLLO_WEBHOOK_BASE_URL?.trim() || '';
@@ -9,7 +10,7 @@ const MAX_LEAD_SEARCH_RESULTS = 100;
 const LEAD_SEARCH_CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+    'Access-Control-Allow-Headers': 'Content-Type, Authorization, x-api-secret-key',
     'Access-Control-Max-Age': '86400',
 };
 
@@ -463,6 +464,14 @@ const INDUSTRY_ALIASES: Record<string, string> = {
     saas: 'computer software',
     'environmental services': 'environment services',
 };
+
+function hasValidServiceSecret(req: Request, expectedSecret: string): boolean {
+    const suppliedSecret = String(req.headers.get('x-api-secret-key') || '').trim();
+    if (!suppliedSecret) return false;
+    const supplied = Buffer.from(suppliedSecret);
+    const expected = Buffer.from(expectedSecret);
+    return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
 
 const INDUSTRY_TAG_IDS = Object.fromEntries(Object.entries({
     'Human Resources': '5567e0e37369640e5ac10c00',
@@ -1355,6 +1364,14 @@ export async function POST(req: Request) {
     };
 
     try {
+        const expectedSecret = String(process.env.API_SECRET_KEY || '').trim();
+        if (!expectedSecret) {
+            return NextResponse.json({ error: 'Backend authentication is not configured' }, { status: 503 });
+        }
+        if (!hasValidServiceSecret(req, expectedSecret)) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
+
         const body: LeadSearchRequest = await req.json();
         const dbClient = getServerSupabase(log);
         const {
