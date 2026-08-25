@@ -1,12 +1,11 @@
 import { NextResponse } from 'next/server';
 import { getServiceSupabase, supabase } from '@/lib/supabase';
 import { v4 as uuidv4 } from 'uuid';
-import crypto from 'crypto';
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const DEFAULT_APOLLO_WEBHOOK_BASE_URL = process.env.APOLLO_WEBHOOK_BASE_URL?.trim() || '';
 const LINKEDIN_PROFILE_TABLE_NAME = 'people_search_leads';
-const MAX_LEAD_SEARCH_RESULTS = 50;
+const MAX_LEAD_SEARCH_RESULTS = 100;
 const LEAD_SEARCH_CORS_HEADERS = {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
@@ -54,8 +53,10 @@ interface LeadSearchRequest {
     revealEmail?: boolean | string | number;
     revealPhone?: boolean | string | number;
     industry_keywords?: string[];
+    company_keywords?: string[];
     company_keyword_tags?: string[];
     company_location?: string[];
+    person_locations?: string[];
     titles?: string[];
     seniorities?: string[];
     employee_ranges?: string[];
@@ -440,6 +441,89 @@ function normalizeFlexibleStringArray(value: unknown): string[] {
     );
 }
 
+function normalizeComparable(value: unknown): string {
+    return String(value ?? '')
+        .normalize('NFKD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .replace(/&/g, ' and ')
+        .replace(/[^a-z0-9]+/g, ' ')
+        .trim();
+}
+
+const INDUSTRY_ALIASES: Record<string, string> = {
+    'recursos humanos': 'human resources',
+    tecnologia: 'technology',
+    salud: 'healthcare',
+    finanzas: 'finance',
+    fabricacion: 'manufacturing',
+    educacion: 'education',
+    construccion: 'construction',
+    software: 'computer software',
+    saas: 'computer software',
+    'environmental services': 'environment services',
+};
+
+const INDUSTRY_TAG_IDS = Object.fromEntries(Object.entries({
+    'Human Resources': '5567e0e37369640e5ac10c00',
+    Technology: '5494458a746564006c840200',
+    Healthcare: '5494458a746564006c840100',
+    Finance: '5494458a746564006c840000',
+    Manufacturing: '5494458a746564006c840300',
+    Retail: '5567ced173696450cb580000',
+    Education: '5494458a746564006c840500',
+    Accounting: '5567ce1f7369643b78570000',
+    'Architecture & Planning': '5567cdb77369645401080000',
+    'Apparel & Fashion': '5567cd82736964540d0b0000',
+    Automotive: '5567cdf27369644cfd800000',
+    'Building Materials': '5567e1a17369641ea9d30100',
+    Biotechnology: '5567d08e7369645dbc4b0000',
+    'Environment Services': '5567ce5b736964540d280000',
+    'Electrical/Electronic Manufacturing': '5567cd4c73696439c9030000',
+    'Computer Software': '5567cd4e7369643b70010000',
+    Entertainment: '5567cdd37369643b80510000',
+    'Education Management': '5567ce9e736964540d540000',
+    Construction: '5567cd4773696439dd350000',
+    'Financial Services': '5567cdd67369643e64020000',
+    'Government Administration': '5567cd527369643981050000',
+    Hospitality: '5567ce9d7369643bc19c0000',
+    'Health, Wellness & Fitness': '5567cddb7369644d250c0000',
+    'Higher Education': '5567cd4c73696453e1300000',
+    'Information Services': '5567e0c97369640d2b3b1600',
+}).map(([name, id]) => [normalizeComparable(name), id])) as Record<string, string>;
+
+function resolveApolloIndustryFilters(requestedIndustries: string[]) {
+    const tagIds = new Set<string>();
+    const keywordFallbacks = new Set<string>();
+
+    for (const requestedIndustry of requestedIndustries) {
+        const normalized = normalizeComparable(requestedIndustry);
+        const canonical = INDUSTRY_ALIASES[normalized] || normalized;
+        const tagId = INDUSTRY_TAG_IDS[canonical];
+        if (tagId) tagIds.add(tagId);
+        else if (requestedIndustry.trim()) keywordFallbacks.add(requestedIndustry.trim());
+    }
+
+    return { tagIds: [...tagIds], keywordFallbacks: [...keywordFallbacks] };
+}
+
+function normalizeApolloEmployeeRange(value: string): string | null {
+    const normalized = value.trim().toLowerCase().replace(/\s+empleados?$/, '').trim();
+    const bounded = normalized.match(/^(\d+)\s*(?:-|,|a)\s*(\d+)$/);
+    if (bounded) {
+        const minimum = Number(bounded[1]);
+        const maximum = Number(bounded[2]);
+        return minimum >= 0 && maximum >= minimum && maximum <= 10_000_000
+            ? `${minimum},${maximum}`
+            : null;
+    }
+
+    const openEnded = normalized.match(/^(\d+)\s*\+$/);
+    if (!openEnded) return null;
+    const minimum = Number(openEnded[1]);
+    return minimum <= 10_000_000 ? `${minimum},10000000` : null;
+}
+
 function parseOptionalNumberish(value: unknown): number | null {
     if (typeof value === 'number' && Number.isFinite(value)) return value;
     if (typeof value !== 'string') return null;
@@ -571,7 +655,12 @@ function resolveEmployeeRanges(body: LeadSearchRequest): string[] {
         body.employeeRange,
     ];
 
-    const ranges = values.flatMap((value) => normalizeFlexibleStringArray(value));
+    const ranges = values.flatMap((value) => {
+        if (Array.isArray(value)) return normalizeFlexibleStringArray(value);
+        if (typeof value === 'string') return value.trim() ? [value.trim()] : [];
+        if (typeof value === 'number' && Number.isFinite(value)) return [String(value)];
+        return [];
+    });
     return Array.from(new Set(ranges));
 }
 
@@ -645,24 +734,13 @@ function resolveSelectedOrganizationRequest(
     const name = normalizeOptionalString(
         body.selected_organization_name ?? body.selectedOrganizationName ?? fallbackCompanyName
     );
-    const domain = normalizeOptionalString(
-        body.selected_organization_domain ?? body.selectedOrganizationDomain
-    );
-    const website = normalizeOptionalString(
-        body.selected_organization_website ?? body.selectedOrganizationWebsite
-    );
-
     return {
         id,
         name,
-        primary_domain: domain ? normalizeDomain(domain) : null,
-        website_url: website,
-        industry: normalizeOptionalString(
-            body.selected_organization_industry ?? body.selectedOrganizationIndustry
-        ),
-        estimated_num_employees: parseOptionalNumberish(
-            body.selected_organization_size ?? body.selectedOrganizationSize
-        ),
+        primary_domain: null,
+        website_url: null,
+        industry: null,
+        estimated_num_employees: null,
     };
 }
 
@@ -1310,8 +1388,10 @@ export async function POST(req: Request) {
             selected_organization_size,
             selectedOrganizationSize,
             industry_keywords,
+            company_keywords,
             company_keyword_tags,
             company_location,
+            person_locations,
             titles,
             seniorities,
             employee_ranges,
@@ -1372,8 +1452,10 @@ export async function POST(req: Request) {
             selected_organization_size,
             selectedOrganizationSize,
             industry_keywords,
+            company_keywords,
             company_keyword_tags,
             company_location,
+            person_locations,
             titles,
             seniorities,
             employee_ranges,
@@ -1397,7 +1479,18 @@ export async function POST(req: Request) {
         const includeSimilarTitles = resolveIncludeSimilarTitles(body, resolvedSearchMode);
         const normalizedTitles = normalizeStringArray(titles);
         const normalizedSeniorities = normalizeStringArray(seniorities);
-        const normalizedEmployeeRanges = resolveEmployeeRanges(body);
+        const requestedEmployeeRanges = resolveEmployeeRanges(body);
+        const normalizedEmployeeRanges = requestedEmployeeRanges
+            .map(normalizeApolloEmployeeRange)
+            .filter((range): range is string => Boolean(range));
+        const hasInvalidEmployeeRanges = normalizedEmployeeRanges.length !== requestedEmployeeRanges.length;
+        const normalizedIndustries = normalizeStringArray(industry_keywords);
+        const normalizedCompanyKeywords = Array.from(new Set([
+            ...normalizeStringArray(company_keywords),
+            ...normalizeStringArray(company_keyword_tags),
+        ]));
+        const normalizedCompanyLocations = normalizeStringArray(company_location);
+        const normalizedPersonLocations = normalizeStringArray(person_locations);
 
         const normalizedCompanyName = normalizeCompanyName(company_name || companyName || '');
         const normalizedOrganizationDomains = resolveOrganizationDomains(body);
@@ -1444,16 +1537,11 @@ export async function POST(req: Request) {
         log('Applied Search Filters:', {
             titles: normalizedTitles,
             seniorities: normalizedSeniorities,
+            industry_keywords: normalizedIndustries,
             organization_num_employees_ranges: normalizedEmployeeRanges,
-            company_keyword_tags: (company_keyword_tags && company_keyword_tags.length > 0
-                ? company_keyword_tags
-                : industry_keywords
-            )
-                ?.map((tag) => tag?.trim())
-                .filter((tag): tag is string => Boolean(tag)) || [],
-            organization_locations: company_location
-                ?.map((location) => location?.trim())
-                .filter((location): location is string => Boolean(location)) || [],
+            company_keyword_tags: normalizedCompanyKeywords,
+            organization_locations: normalizedCompanyLocations,
+            person_locations: normalizedPersonLocations,
             selected_organization: selectedOrganizationRequest,
         });
 
@@ -1573,18 +1661,6 @@ export async function POST(req: Request) {
                 );
             }
 
-            selectedOrganization = await hydrateOrganizationCandidate(
-                apiKey,
-                selectedOrganization,
-                log,
-                organizationHydrationCache
-            );
-            organizationCandidates = organizationCandidates.map((candidate) =>
-                candidate.id === selectedOrganization?.id
-                    ? mergeOrganizationCandidate(candidate, selectedOrganization)
-                    : candidate
-            );
-
             log('Selected organization for company search mode', selectedOrganization);
 
             const leads = await fetchPeople(
@@ -1599,10 +1675,14 @@ export async function POST(req: Request) {
                 log
             );
 
-            const hydratedLeads = applyOrganizationContextToLeads(leads, [selectedOrganization]);
+            const hydratedLeads = explicitSelectedOrganizationId
+                ? leads
+                : applyOrganizationContextToLeads(leads, [selectedOrganization]);
 
             const savedLeads = await saveToSupabase(dbClient, hydratedLeads, batchRunId, log, {
-                defaultOrganization: toOrganizationFallbackFromCandidate(selectedOrganization),
+                defaultOrganization: explicitSelectedOrganizationId
+                    ? null
+                    : toOrganizationFallbackFromCandidate(selectedOrganization),
             });
             const sparseLeadSummary = summarizeSparseLeads(savedLeads);
             if (sparseLeadSummary.warnings.length > 0) {
@@ -1825,204 +1905,64 @@ export async function POST(req: Request) {
             });
         }
 
-        const normalizedKeywordTags = (company_keyword_tags && company_keyword_tags.length > 0
-            ? company_keyword_tags
-            : industry_keywords
-        )
-            ?.map((tag) => tag?.trim())
-            .filter((tag): tag is string => Boolean(tag));
-
-        const normalizedLocations = company_location
-            ?.map((location) => location?.trim())
-            .filter((location): location is string => Boolean(location));
-
-        log('Resolved Company Filters:', {
-            company_keyword_tags: normalizedKeywordTags,
-            organization_locations: normalizedLocations,
-            organization_num_employees_ranges: normalizedEmployeeRanges,
-            person_titles: normalizedTitles,
-            person_seniorities: normalizedSeniorities,
-            companies_only,
-        });
-
-        // --- Pagination Logic Start ---
-        // 1. Generate Filter Hash
-        const filtersForHash = {
-            search_mode: resolvedSearchMode,
-            company_keyword_tags: normalizedKeywordTags,
-            company_location: normalizedLocations,
-            employee_ranges: normalizedEmployeeRanges,
-            titles: normalizedTitles,
-            seniorities: normalizedSeniorities,
-            include_similar_titles: includeSimilarTitles,
-        };
-        const filtersHash = crypto
-            .createHash('md5')
-            .update(JSON.stringify(filtersForHash))
-            .digest('hex');
-
-        log(`Filters Hash: ${filtersHash}`);
-
-        // 2. Check Search Progress
-        let startPage = 1;
-        if (shouldResumeSearchProgress) {
-            const { data: progressData, error: progressError } = await dbClient
-                .from('search_progress')
-                .select('last_company_page')
-                .eq('user_id', user_id)
-                .eq('filters_hash', filtersHash)
-                .maybeSingle();
-
-            if (progressError) {
-                log('Warning: Failed to load previous search progress. Starting from Company Page 1.', {
-                    error: progressError.message,
-                });
-            } else if (progressData) {
-                startPage = progressData.last_company_page + 1;
-                log(`Found previous progress. Resuming from Company Page ${startPage}`);
-            } else {
-                log('No previous progress found. Starting from Company Page 1');
-            }
-        } else {
-            log('Search progress resume disabled. Starting from Company Page 1');
-        }
-        // --- Pagination Logic End ---
-
-        // Step 1: Search Companies
-        const { companies: rawCompanies, lastPageFetched } = await fetchCompanies(apiKey, {
-            company_keyword_tags: normalizedKeywordTags,
-            company_location: normalizedLocations,
-            employee_ranges: normalizedEmployeeRanges,
-            max_results: maxResults,
-            start_page: startPage
-        }, log);
-
-        const companyCandidates = rawCompanies
-            .map((company) => toOrganizationCandidate(company, company.name || ''))
-            .filter((candidate: OrganizationCandidate | null): candidate is OrganizationCandidate => Boolean(candidate));
-        const hydratedCompanyCandidates = await hydrateOrganizationCandidates(
-            apiKey,
-            companyCandidates,
-            log,
-            organizationHydrationCache
-        );
-        const hydratedCompanyCandidatesById = new Map(
-            hydratedCompanyCandidates.map((candidate) => [candidate.id, candidate])
-        );
-        const companies = rawCompanies.map((company) => {
-            const hydratedCandidate = hydratedCompanyCandidatesById.get(company.id);
-            return hydratedCandidate
-                ? mergeApolloCompanyWithCandidate(company, hydratedCandidate)
-                : company;
-        });
-
-        log(`Found ${companies.length} companies.`);
-        log('Hydrated batch organization metadata:', {
-            companies_with_domain: companies.filter((company) => normalizeDomain(company.primary_domain || company.website_url || '')).length,
-            companies_with_industry: companies.filter((company) => normalizeOptionalString(company.industry)).length,
-            companies_with_size: companies.filter((company) => normalizeOptionalNumber(company.estimated_num_employees)).length,
-        });
-
-        // Update Progress if we fetched anything
-        if (shouldResumeSearchProgress && lastPageFetched >= startPage) {
-            const { error: upsertError } = await dbClient
-                .from('search_progress')
-                .upsert({
-                    user_id,
-                    filters_hash: filtersHash,
-                    last_company_page: lastPageFetched,
-                    updated_at: new Date().toISOString()
-                });
-
-            if (upsertError) {
-                log('Warning: Failed to save search progress:', upsertError);
-            } else {
-                log(`Saved search progress. Last Company Page: ${lastPageFetched}`);
-            }
-        }
-
-        if (companies.length === 0) {
-            return NextResponse.json({
-                batch_run_id: batchRunId,
-                search_mode: resolvedSearchMode,
-                companies_count: 0,
-                companies: [],
-                leads_count: 0,
-                leads: [],
-                missing_organization_id_count: 0,
-                missing_organization_domain_count: 0,
-                missing_organization_industry_count: 0,
-                missing_email_count: 0,
-                warnings: [],
-                debug_logs: debugLogs,
-            });
-        }
-
         if (companies_only) {
-            return NextResponse.json({
-                batch_run_id: batchRunId,
-                search_mode: resolvedSearchMode,
-                companies_count: companies.length,
-                companies,
-                debug_logs: debugLogs,
-            });
+            return NextResponse.json(
+                { error: 'companies_only is not supported by the non-enriching people search' },
+                { status: 400 }
+            );
         }
 
-        // Step 2: Extract Organization IDs
-        const orgIds = Array.from(
-            new Set(
-                companies
-                    .map((c) => c.id)
-                    .filter((id) => id && id.trim() !== '')
-            )
-        );
-        log(`Extracted ${orgIds.length} unique organization IDs.`);
+        {
+            if (hasInvalidEmployeeRanges) {
+                return NextResponse.json(
+                    { error: 'employee_ranges must use min,max, min-max, or min+' },
+                    { status: 400 }
+                );
+            }
+            const hasBoundedFilter = normalizedIndustries.length > 0
+                || normalizedCompanyKeywords.length > 0
+                || normalizedCompanyLocations.length > 0
+                || normalizedPersonLocations.length > 0
+                || normalizedEmployeeRanges.length > 0
+                || normalizedTitles.length > 0
+                || normalizedSeniorities.length > 0;
+            if (!hasBoundedFilter) {
+                return NextResponse.json(
+                    { error: 'At least one bounded search filter is required' },
+                    { status: 400 }
+                );
+            }
 
-        // Chunk IDs
-        const chunkSize = 25;
-        const idChunks = [];
-        for (let i = 0; i < orgIds.length; i += chunkSize) {
-            idChunks.push(orgIds.slice(i, i + chunkSize));
-        }
-
-        // Step 3: Search People
-        let allLeads: ApolloPerson[] = [];
-
-        for (const chunk of idChunks) {
-            if (allLeads.length >= maxResults) break;
-
-            const remaining = maxResults - allLeads.length;
-            const chunkOrganizations = chunk
-                .map((organizationId) => hydratedCompanyCandidatesById.get(organizationId))
-                .filter((candidate): candidate is OrganizationCandidate => Boolean(candidate));
-            const leads = await fetchPeople(apiKey, chunk, {
+            const industryFilters = resolveApolloIndustryFilters(normalizedIndustries);
+            const leads = await fetchFilteredPeople(apiKey, {
+                industry_tag_ids: industryFilters.tagIds,
+                company_keyword_tags: [
+                    ...normalizedCompanyKeywords,
+                    ...industryFilters.keywordFallbacks,
+                ],
+                company_locations: normalizedCompanyLocations,
+                person_locations: normalizedPersonLocations,
+                employee_ranges: normalizedEmployeeRanges,
                 titles: normalizedTitles,
                 seniorities: normalizedSeniorities,
                 include_similar_titles: includeSimilarTitles,
-                max_results: remaining,
+                max_results: maxResults,
             }, log);
-            allLeads = [...allLeads, ...applyOrganizationContextToLeads(leads, chunkOrganizations)];
+            const savedLeads = await saveToSupabase(dbClient, leads, batchRunId, log);
+            const sparseLeadSummary = summarizeSparseLeads(savedLeads);
+
+            return NextResponse.json({
+                batch_run_id: batchRunId,
+                search_mode: resolvedSearchMode,
+                search_strategy: 'people',
+                enrichment_requested: false,
+                leads_count: savedLeads.length,
+                leads: savedLeads,
+                ...sparseLeadSummary,
+                debug_logs: debugLogs,
+            });
         }
 
-        log(`Found ${allLeads.length} leads.`);
-
-        // Step 4: Persist to Supabase
-        const savedLeads = await saveToSupabase(dbClient, allLeads, batchRunId, log, {
-            organizationsById: buildOrganizationFallbackMap(companies),
-        });
-        const sparseLeadSummary = summarizeSparseLeads(savedLeads);
-        if (sparseLeadSummary.warnings.length > 0) {
-            log('Sparse lead warnings', sparseLeadSummary);
-        }
-
-        return NextResponse.json({
-            batch_run_id: batchRunId,
-            search_mode: resolvedSearchMode,
-            leads_count: savedLeads.length,
-            leads: savedLeads,
-            ...sparseLeadSummary,
-            debug_logs: debugLogs,
-        });
     } catch (error: any) {
         log('Error in lead search:', error.message);
         return NextResponse.json(
@@ -2622,6 +2562,61 @@ async function fetchPeople(
         }
     }
 
+    return people.slice(0, filters.max_results);
+}
+
+async function fetchFilteredPeople(
+    apiKey: string,
+    filters: {
+        industry_tag_ids: string[];
+        company_keyword_tags: string[];
+        company_locations: string[];
+        person_locations: string[];
+        employee_ranges: string[];
+        titles: string[];
+        seniorities: string[];
+        include_similar_titles?: boolean;
+        max_results: number;
+    },
+    log: (msg: string, data?: any) => void
+): Promise<ApolloPerson[]> {
+    const params = new URLSearchParams();
+    params.set('page', '1');
+    params.set('per_page', String(Math.min(100, filters.max_results)));
+
+    for (const id of filters.industry_tag_ids) params.append('organization_industry_tag_ids[]', id);
+    for (const keyword of filters.company_keyword_tags) params.append('q_organization_keyword_tags[]', keyword);
+    for (const location of filters.company_locations) params.append('organization_locations[]', location);
+    for (const location of filters.person_locations) params.append('person_locations[]', location);
+    for (const range of filters.employee_ranges) params.append('organization_num_employees_ranges[]', range);
+    for (const title of filters.titles) params.append('person_titles[]', title);
+    for (const seniority of filters.seniorities) params.append('person_seniorities[]', seniority);
+    if (filters.titles.length > 0 && typeof filters.include_similar_titles === 'boolean') {
+        params.set('include_similar_titles', String(filters.include_similar_titles));
+    }
+
+    // Verified against People API Search on 2026-08-25; Apollo's public OpenAPI omits
+    // the industry and organization keyword filters, so any rejection fails closed.
+    log('Fetching filtered people directly', { params: params.toString() });
+    const response = await fetch(`https://api.apollo.io/api/v1/mixed_people/api_search?${params.toString()}`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-cache',
+            accept: 'application/json',
+            'x-api-key': apiKey,
+        },
+        body: '{}',
+    });
+
+    if (!response.ok) {
+        const errorText = await response.text();
+        log(`Apollo API Error (Filtered People): ${response.status} - ${errorText}`);
+        throw new Error('Apollo filtered people search failed');
+    }
+
+    const data = await response.json();
+    const people = Array.isArray(data?.people) ? data.people : [];
     return people.slice(0, filters.max_results);
 }
 
