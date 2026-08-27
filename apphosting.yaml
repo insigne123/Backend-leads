@@ -13,8 +13,8 @@ env:
   - variable: NEXT_PUBLIC_SUPABASE_ANON_KEY
     secret: NEXT_PUBLIC_SUPABASE_ANON_KEY
 
-  - variable: APOLLO_WEBHOOK_BASE_URL
-    secret: APOLLO_WEBHOOK_BASE_URL
+  - variable: FULLENRICH_API_KEY
+    secret: FULLENRICH_API_KEY
 
   - variable: VANE_BASE_URL
     secret: VANE_BASE_URL
@@ -43,8 +43,29 @@ env:
   - variable: SUPABASE_SERVICE_ROLE_KEY
     secret: SUPABASE_SERVICE_ROLE_KEY
 
-  - variable: APOLLO_API_KEY
-    secret: APOLLO_API_KEY
-
   - variable: API_SECRET_KEY
     secret: API_SECRET_KEY
+
+  - variable: ENRICHMENT_SERVICE_SECRET
+    secret: API_SECRET_KEY
+
+  - variable: LEADS_PROVIDER_DEFAULT
+    value: fullenrich
+
+  - variable: APOLLO_BACKEND_RATE_LIMIT_WINDOW_MS
+    value: "60000"
+
+  - variable: APOLLO_BACKEND_LEAD_SEARCH_MAX_REQUESTS
+    value: "20"
+
+  - variable: APOLLO_BACKEND_ENRICH_MAX_REQUESTS
+    value: "60"
+
+  - variable: APOLLO_BACKEND_MAX_REQUEST_BYTES
+    value: "65536"
+
+  - variable: APOLLO_BACKEND_MAX_SEARCH_RESULTS
+    value: "100"
+
+  - variable: APOLLO_BACKEND_PROVIDER_TIMEOUT_MS
+    value: "20000"
