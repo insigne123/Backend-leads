@@ -5,6 +5,9 @@ runConfig:
   # Increase this value if you'd like to automatically spin up
   # more instances in response to increased traffic.
   maxInstances: 1
+  concurrency: 20
+  cpu: 1
+  memoryMiB: 512
 
 env:
   - variable: NEXT_PUBLIC_SUPABASE_URL
@@ -45,6 +48,30 @@ env:
 
   - variable: APOLLO_API_KEY
     secret: APOLLO_API_KEY
+
+  - variable: LEADS_PROVIDER_DEFAULT
+    value: apollo
+
+  - variable: ENRICHMENT_SERVICE_SECRET
+    secret: ENRICHMENT_SERVICE_SECRET
+
+  - variable: APOLLO_BACKEND_RATE_LIMIT_WINDOW_MS
+    value: "60000"
+
+  - variable: APOLLO_BACKEND_LEAD_SEARCH_MAX_REQUESTS
+    value: "20"
+
+  - variable: APOLLO_BACKEND_ENRICH_MAX_REQUESTS
+    value: "60"
+
+  - variable: APOLLO_BACKEND_MAX_REQUEST_BYTES
+    value: "65536"
+
+  - variable: APOLLO_BACKEND_MAX_SEARCH_RESULTS
+    value: "100"
+
+  - variable: APOLLO_BACKEND_PROVIDER_TIMEOUT_MS
+    value: "20000"
 
   - variable: API_SECRET_KEY
     secret: API_SECRET_KEY
