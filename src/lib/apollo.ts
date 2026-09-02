@@ -16,6 +16,7 @@ export class ApolloGatewayError extends Error {
     readonly status: 429 | 502 | 503 | 504,
     readonly code:
       | 'APOLLO_PROVIDER_NOT_CONFIGURED'
+      | 'APOLLO_CREDITS_EXHAUSTED'
       | 'APOLLO_RATE_LIMITED'
       | 'APOLLO_UPSTREAM_ERROR'
       | 'APOLLO_UPSTREAM_TIMEOUT'
@@ -321,6 +322,10 @@ async function requestApollo(
     if (!record) throw new ApolloGatewayError(502, 'APOLLO_UPSTREAM_INVALID_RESPONSE');
     if (!response.ok) {
       if (options.acceptErrorPayload) return { ...record, http_status: response.status };
+      const errorDetails = asRecord(record.error_details);
+      if (firstText(errorDetails?.code, record.code) === 'BILLING.LIMIT.CREDITS_EXHAUSTED') {
+        throw new ApolloGatewayError(429, 'APOLLO_CREDITS_EXHAUSTED');
+      }
       throw new ApolloGatewayError(502, 'APOLLO_UPSTREAM_ERROR');
     }
     return record;
