@@ -1,14 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { ApolloGatewayError, getApolloApiKey, getApolloWebhookResult } from '../../../../lib/apollo';
 import {
   authenticateInternalRequest,
   auditGatewayRequest,
   consumeEndpointRateLimit,
   getGatewayConfig,
   getRequestId,
-  readBoundedJsonBody,
-} from '../../../lib/gateway';
-import { ApolloGatewayError, executeApolloEnrichment, getApolloApiKey } from '../../../lib/apollo';
-import { validateEnrichmentInput } from '../../../lib/validation';
+} from '../../../../lib/gateway';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -21,18 +19,20 @@ function response(body: Record<string, unknown>, status: number, requestId: stri
   return result;
 }
 
-export async function POST(request: NextRequest) {
+export async function GET(
+  request: NextRequest,
+  context: { params: Promise<{ requestId: string }> },
+) {
   const startedAt = Date.now();
   const requestId = getRequestId(request.headers);
   const config = getGatewayConfig();
-  const finish = (status: number, outcome: string, metrics?: Record<string, number | boolean | string | undefined>) => {
+  const finish = (status: number, outcome: string) => {
     auditGatewayRequest({
-      route: 'enrich',
+      route: 'webhook-result',
       requestId,
       status,
       outcome,
       durationMs: Date.now() - startedAt,
-      metrics,
     });
   };
 
@@ -44,50 +44,28 @@ export async function POST(request: NextRequest) {
 
   const rateLimit = consumeEndpointRateLimit('enrich', config);
   if (!rateLimit.allowed) {
-    finish(429, 'RATE_LIMITED', { rateLimit: rateLimit.limit });
+    finish(429, 'RATE_LIMITED');
     const result = response({ error: 'RATE_LIMITED' }, 429, requestId);
     result.headers.set('retry-after', String(rateLimit.retryAfterSeconds));
-    result.headers.set('x-rate-limit-limit', String(rateLimit.limit));
     return result;
   }
 
-  const body = await readBoundedJsonBody(request, config.maxRequestBytes);
-  if (!body.ok) {
-    finish(body.status, body.code);
-    return response({ error: body.code }, body.status, requestId);
-  }
-
-  const input = validateEnrichmentInput(body.value);
-  if (!input.ok) {
+  const { requestId: providerRequestId } = await context.params;
+  if (!providerRequestId || providerRequestId.length > 255) {
     finish(400, 'INVALID_REQUEST');
-    return response({ error: 'INVALID_REQUEST', details: input.issues }, 400, requestId);
-  }
-
-  const apiKey = getApolloApiKey();
-  if (!apiKey) {
-    finish(503, 'APOLLO_PROVIDER_NOT_CONFIGURED');
-    return response({ error: 'APOLLO_PROVIDER_NOT_CONFIGURED' }, 503, requestId);
+    return response({ error: 'INVALID_REQUEST' }, 400, requestId);
   }
 
   try {
-    const result = await executeApolloEnrichment(input.value, apiKey, config);
-    finish(200, result.success ? 'COMPLETED' : 'NOT_FOUND', {
-      revealEmail: input.value.revealEmail,
-      revealPhone: input.value.revealPhone,
-      enrichmentLevel: input.value.enrichmentLevel,
-      rateLimitRemaining: rateLimit.remaining,
-    });
+    const result = await getApolloWebhookResult(providerRequestId, getApolloApiKey(), config);
+    finish(200, 'COMPLETED');
     return response(result, 200, requestId);
   } catch (error) {
     if (error instanceof ApolloGatewayError) {
-      finish(error.status, error.code, {
-        revealEmail: input.value.revealEmail,
-        revealPhone: input.value.revealPhone,
-      });
+      finish(error.status, error.code);
       return response({ error: error.code }, error.status, requestId);
     }
-
-    console.error('[apollo-backend] enrich failed', { requestId, code: 'BACKEND_ERROR' });
+    console.error('[apollo-backend] webhook-result failed', { requestId, code: 'BACKEND_ERROR' });
     finish(500, 'BACKEND_ERROR');
     return response({ error: 'BACKEND_ERROR' }, 500, requestId);
   }
