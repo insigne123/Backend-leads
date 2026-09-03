@@ -55,6 +55,16 @@ function asBoolean(value: unknown) {
   return undefined;
 }
 
+function parseApolloJson(raw: string) {
+  // Apollo request IDs are signed 64-bit integers. Preserve their lexical value
+  // before JSON.parse converts them to an imprecise JavaScript Number.
+  const preserved = raw.replace(
+    /("(?:request_id|requestId)"\s*:\s*)(-?\d+)(?=\s*[,}])/g,
+    '$1"$2"',
+  );
+  return JSON.parse(preserved) as unknown;
+}
+
 function sanitizeUsageValue(value: unknown, depth = 0): unknown {
   if (depth > 5) return '[TRUNCATED]';
   if (value == null || typeof value === 'number' || typeof value === 'boolean') return value;
@@ -314,7 +324,7 @@ async function requestApollo(
     }
     let payload: unknown;
     try {
-      payload = await response.json();
+      payload = parseApolloJson(await response.text());
     } catch {
       throw new ApolloGatewayError(502, 'APOLLO_UPSTREAM_INVALID_RESPONSE');
     }
@@ -566,16 +576,34 @@ export async function getApolloWebhookResult(requestId: string, apiKey: string, 
     config,
     { method: 'GET', acceptErrorPayload: true },
   );
-  const result = asRecord(payload.result) || payload;
+  const result = asRecord(payload.webhook_result)
+    || asRecord(payload.result)
+    || payload;
   const httpStatus = asNumber(payload.http_status);
   const fallbackStatus = httpStatus === 404 ? 'request_id_unknown'
     : httpStatus === 410 ? 'request_id_expired'
       : httpStatus === 400 ? 'invalid_request_id'
         : 'unknown';
-  const person = mapPerson(result.person || payload.person, { includeContact: true });
+  const person = mapPerson(
+    result.person
+      || payload.person
+      || asArray(result.people)[0]
+      || asArray(payload.people)[0],
+    { includeContact: true },
+  );
+  const status = firstText(
+    payload.webhook_status,
+    payload.status,
+    payload.error_code,
+    result.webhook_status,
+    result.status,
+    result.error_code,
+    payload.code,
+    result.code,
+  );
   return {
     provider_request_id: firstText(payload.request_id, result.request_id, normalizedRequestId),
-    status: firstText(payload.status, result.status, payload.code, result.code) || fallbackStatus,
+    status: status || fallbackStatus,
     retry_after_seconds: asNumber(payload.retry_after_seconds ?? result.retry_after_seconds),
     candidate: person ? {
       apollo_person_id: person.apollo_id,
